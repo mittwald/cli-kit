@@ -53,6 +53,9 @@ func JoinSpacedBoolValues(root *cobra.Command, args []string) []string {
 
 	first, limit := 0, len(args)
 	if len(args) > 0 && (args[0] == cobra.ShellCompRequestCmd || args[0] == cobra.ShellCompNoDescRequestCmd) {
+		if len(args) < 3 {
+			return args // At most the word being completed: nothing to join.
+		}
 		first, limit = 1, limit-1 // The last word is the one being completed.
 	}
 	cmd := selected(root, args[first:limit])
