@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -304,8 +305,13 @@ func TestCompletionCache(t *testing.T) {
 	if _, err := cache.Get(context.Background(), "other", load); err != nil || calls != 3 {
 		t.Fatalf("scopes share a cache entry: calls %d", calls)
 	}
-	if info, err := os.Stat(filepath.Dir(path)); err != nil || info.Mode().Perm() != 0o700 {
-		t.Errorf("cache directory mode = %v, %v", info.Mode().Perm(), err)
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows has no Unix permission bits; Go reports 0777 for directories.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		t.Errorf("cache directory mode = %v", info.Mode().Perm())
 	}
 }
 
