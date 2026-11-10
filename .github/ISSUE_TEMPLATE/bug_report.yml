@@ -1,0 +1,73 @@
+name: Bug report
+description: Report unexpected behavior of a cli-kit package
+type: "Bug"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report!
+
+        > [!IMPORTANT]
+        > Please redact secrets (tokens, passwords, keyring contents) from code and output before submitting.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you start
+      options:
+        - label: I have searched the existing issues and did not find a report for this bug.
+          required: true
+        - label: I have reproduced this with the latest release.
+          required: false
+
+  - type: dropdown
+    id: packages
+    attributes:
+      label: Affected packages
+      multiple: true
+      options:
+        - term
+        - theme
+        - pick
+        - live
+        - progress
+        - table
+        - format
+        - ics
+        - secret
+        - selfupdate
+        - cobrax
+        - buildinfo
+
+  - type: input
+    id: version
+    attributes:
+      label: cli-kit version
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Go version, operating system, terminal emulator and shell.
+      placeholder: go1.24.9, macOS 15, iTerm2, zsh
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: A minimal program or test that shows the problem.
+      render: go
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true

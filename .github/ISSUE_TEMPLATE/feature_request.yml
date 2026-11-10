@@ -1,0 +1,22 @@
+name: Feature request
+description: Suggest an improvement to a package, or a new package
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like cli-kit to do?
+      description: Describe the use case in your command-line tool, not only the API you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: Optional sketch of how you would call it.
+      render: go
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Workarounds you use today, or other libraries you looked at.
