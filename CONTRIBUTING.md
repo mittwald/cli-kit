@@ -66,7 +66,7 @@ directive.
 
 ## Releases
 
-Maintainers tag releases from `master` as `vMAJOR.MINOR.PATCH`. Pushing the
+Maintainers tag releases from `main` as `vMAJOR.MINOR.PATCH`. Pushing the
 tag runs the release workflow: it tests the tagged commit, creates the
 GitHub release with generated notes, and asks the Go module proxy to fetch
 the version so it appears on pkg.go.dev. Tags are never moved or deleted;

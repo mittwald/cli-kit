@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/mittwald/cli-kit/blob/master/SECURITY.md
+    url: https://github.com/mittwald/cli-kit/blob/main/SECURITY.md
     about: Please report vulnerabilities privately by email, not as an issue.
