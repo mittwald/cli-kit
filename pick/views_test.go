@@ -318,3 +318,49 @@ func TestSelectRejectsEmptyListsAndNonTerminals(t *testing.T) {
 		t.Errorf("Checklist() without a terminal = %v, want ErrNotATerminal", err)
 	}
 }
+
+// A view loaded on its first switch keeps the cursor on the row with the
+// key that was selected, as a view that already holds its rows does.
+func TestLazyViewKeepsTheSelectedKey(t *testing.T) {
+	opts := scopedOptions()
+	opts.Views[1] = View{Name: "remote", Load: func() ([]Item, error) {
+		return []Item{
+			{Cells: []string{"origin/release"}, Key: "release"},
+			{Cells: []string{"origin/feature/login"}, Key: "feature/login"},
+		}, nil
+	}}
+	l := newList(opts, 0, false)
+	l.apply(key{kind: keyDown})
+	l.apply(key{kind: keyTab})
+	l.runPendingLoad()
+	if got := l.items[l.selected()].Cells[0]; got != "origin/feature/login" {
+		t.Errorf("after the load the cursor is on %q, want the row with the same key", got)
+	}
+}
+
+// Views that narrow the items by group show their own title too.
+func TestGroupViewsShowTheirTitle(t *testing.T) {
+	l := newList(Options{
+		Title: "Which one?",
+		Items: []Item{
+			{Cells: []string{"1.4.26"}, Groups: []string{"install"}},
+			{Cells: []string{"1.4.25"}, Groups: []string{"edit"}},
+		},
+		Views: []View{
+			{Name: "all"},
+			{Name: "edit", Groups: []string{"edit"}, Title: "Which version to edit?"},
+		},
+		View: 1,
+	}, 0, false)
+	if got := l.render(80)[0]; !strings.HasPrefix(got, "Which version to edit?") {
+		t.Errorf("title = %q, want the initial view's title", got)
+	}
+	l.apply(key{kind: keyTab})
+	if got := l.render(80)[0]; !strings.HasPrefix(got, "Which one?") {
+		t.Errorf("title = %q, want the options' title for a view without one", got)
+	}
+	l.apply(key{kind: keyTab})
+	if got := l.render(80)[0]; !strings.HasPrefix(got, "Which version to edit?") {
+		t.Errorf("title = %q, want the view's title after Tab", got)
+	}
+}

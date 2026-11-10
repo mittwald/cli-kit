@@ -55,6 +55,9 @@ type list struct {
 	loaded   []bool
 	failures []string
 	pending  bool
+	// pendingKey is the key of the row selected when the pending view was
+	// switched to, for the cursor to land on once its rows are loaded.
+	pendingKey string
 
 	typed     func(string) bool
 	typedNote string
@@ -126,8 +129,8 @@ func newList(opts Options, height int, color bool) *list {
 			}
 		}
 	}
+	l.applyViewTitle()
 	if l.scoped {
-		l.title = firstNonEmpty(l.views[l.view].Title, l.fallback)
 		l.setItems(l.views[l.view].Items)
 		l.pending = l.needsLoad()
 	} else {
@@ -351,6 +354,7 @@ func (l *list) switchView(delta int) {
 	n := len(l.views)
 	if !l.scoped {
 		l.view = (l.view + delta + n) % n
+		l.applyViewTitle()
 		l.setFilter(l.filter)
 		return
 	}
@@ -360,14 +364,26 @@ func (l *list) switchView(delta int) {
 	}
 	l.view = (l.view + delta + n) % n
 	l.pending = l.needsLoad()
+	l.pendingKey = ""
+	if l.pending {
+		l.pendingKey = key
+	}
 	l.loadView(key)
+}
+
+// applyViewTitle shows the current view's title, or the options' title for
+// a view without one.
+func (l *list) applyViewTitle() {
+	if len(l.views) > 0 {
+		l.title = firstNonEmpty(l.views[l.view].Title, l.fallback)
+	}
 }
 
 // loadView makes the current view's own rows the ones on screen. The filter
 // carries over, and the cursor lands on the row carrying key, or at the top.
 func (l *list) loadView(key string) {
 	view := l.views[l.view]
-	l.title = firstNonEmpty(view.Title, l.fallback)
+	l.applyViewTitle()
 	l.setItems(view.Items)
 	l.cursor, l.top = 0, 0
 	l.applyFilter()
@@ -394,6 +410,8 @@ func (l *list) loadPending() bool { return l.pending }
 // the fetch blocks.
 func (l *list) runPendingLoad() {
 	l.pending = false
+	key := l.pendingKey
+	l.pendingKey = ""
 	view := l.views[l.view]
 	if view.Load == nil || l.loaded[l.view] {
 		return
@@ -409,7 +427,7 @@ func (l *list) runPendingLoad() {
 		}
 	}
 	l.views[l.view].Items = items
-	l.loadView("")
+	l.loadView(key)
 }
 
 // toggleMark marks the row under the cursor or unmarks it. The cursor stays,

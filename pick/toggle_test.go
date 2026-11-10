@@ -2,10 +2,14 @@ package pick
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/mittwald/cli-kit/term"
 )
 
 func testSwitches() *switches {
@@ -222,5 +226,52 @@ func TestDriveSwitches(t *testing.T) {
 	}
 	if err := drive(testChecklist(), &renderer{w: io.Discard}, fixedSize(80, 24), 0, &scriptedInput{}); !errors.Is(err, ErrInterrupted) {
 		t.Errorf("EOF: err = %v, want ErrInterrupted", err)
+	}
+}
+
+// A checklist longer than the terminal draws a window of rows that follows
+// the cursor, so the block always fits and redraws in place.
+func TestChecklistFitsTheTerminalHeight(t *testing.T) {
+	rows := make([]switchRow, 30)
+	for i := range rows {
+		rows[i] = switchRow{label: "box " + strconv.Itoa(i+1)}
+	}
+	c := newSwitches(switchOptions{title: "Which?", note: "a note", rows: rows, checklist: true}, false)
+	const height = 24
+	c.resize(0, height)
+	check := func(step string, wantFirst, wantCursor string) {
+		t.Helper()
+		lines := c.render(80)
+		if len(lines) >= height {
+			t.Fatalf("%s: %d lines on a %d-row terminal", step, len(lines), height)
+		}
+		if got := term.StripANSI(lines[3]); !strings.HasSuffix(got, " "+wantFirst) {
+			t.Errorf("%s: first row %q, want %q", step, got, wantFirst)
+		}
+		var cursorRow string
+		for _, line := range lines {
+			if strings.HasPrefix(line, cursorMarker) {
+				cursorRow = line
+			}
+		}
+		if !strings.HasSuffix(cursorRow, " "+wantCursor) {
+			t.Errorf("%s: cursor row %q, want %q", step, cursorRow, wantCursor)
+		}
+		if got, want := lines[len(lines)-2], fmt.Sprintf("%d of 30", c.cursor+1); got != want {
+			t.Errorf("%s: position line %q, want %q", step, got, want)
+		}
+	}
+	check("start", "box 1", "box 1")
+	c.apply(key{kind: keyEnd})
+	check("End", "box 14", "box 30")
+	for range 20 {
+		c.apply(key{kind: keyUp})
+	}
+	check("up", "box 10", "box 10")
+
+	// A taller terminal shows every row again, without the position line.
+	c.resize(0, 60)
+	if lines := c.render(80); len(lines) != 30+5 {
+		t.Errorf("%d lines with room for all rows, want 35", len(lines))
 	}
 }

@@ -237,8 +237,8 @@ func TestFallbackUsesSecondaryWhenPrimaryFails(t *testing.T) {
 	if err := s.Delete("alice"); err != nil {
 		t.Fatalf("Delete = %v", err)
 	}
-	if _, err := s.Get("alice"); !errors.Is(err, errUnavailable) {
-		t.Fatalf("Get after Delete = %v, want the primary's failure", err)
+	if _, err := s.Get("alice"); !errors.Is(err, ErrNotFound) || !errors.Is(err, errUnavailable) {
+		t.Fatalf("Get after Delete = %v, want ErrNotFound and the primary's failure", err)
 	}
 }
 

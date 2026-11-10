@@ -49,6 +49,23 @@ func TestLiveCountsRowsAtTheCurrentWidth(t *testing.T) {
 	}
 }
 
+// A caller that reuses its slice for the next frame does not change what
+// the next draw moves up over: the screen still shows the old lines.
+func TestLiveKeepsItsOwnCopyOfTheDrawnLines(t *testing.T) {
+	var out bytes.Buffer
+	live := New(&out)
+	live.size = func() (int, int) { return 4, 24 }
+
+	frame := []string{"abcdefgh"}
+	_ = live.Draw(frame)
+	out.Reset()
+	frame[0] = "x"
+	_ = live.Draw(frame)
+	if got, want := out.String(), "\r\x1b[2A\x1b[Jx\n"; got != want {
+		t.Errorf("redraw = %q, want %q", got, want)
+	}
+}
+
 // Lines taller than the screen lose their first lines, so the next draw can
 // still move back up to where this one started; the cursor's row counts too.
 func TestLiveKeepsToTheScreen(t *testing.T) {

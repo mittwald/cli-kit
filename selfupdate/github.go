@@ -24,7 +24,9 @@ type GitHub struct {
 	// for GitHub Enterprise Server ("https://github.example.com/api/v3") or
 	// tests.
 	APIURL string
-	// Client sends the requests; nil means http.DefaultClient.
+	// Client sends the requests; nil means http.DefaultClient. A redirect
+	// to another origin (scheme, host and port) never carries the
+	// credential; the client's own CheckRedirect still applies.
 	Client *http.Client
 	// UserAgent identifies the requests; empty means a generic default.
 	UserAgent string
@@ -39,13 +41,12 @@ func (g *GitHub) api() string {
 
 func (g *GitHub) requester() requester {
 	return requester{
-		client:    g.Client,
-		token:     g.Token,
-		userAgent: g.UserAgent,
-		headers:   map[string]string{"X-GitHub-Api-Version": "2022-11-28"},
-		authorize: func(req *http.Request, token string) {
-			req.Header.Set("Authorization", "Bearer "+token)
-		},
+		client:     g.Client,
+		token:      g.Token,
+		userAgent:  g.UserAgent,
+		headers:    map[string]string{"X-GitHub-Api-Version": "2022-11-28"},
+		authHeader: "Authorization",
+		authScheme: "Bearer",
 	}
 }
 
