@@ -19,7 +19,7 @@ theme.
 go get github.com/mittwald/cli-kit
 ```
 
-cli-kit supports Go 1.24 and newer on Linux, macOS and Windows. It is one
+cli-kit supports Go 1.27 and newer on Linux, macOS and Windows. It is one
 module: import only the packages you need, and only their dependencies are
 compiled into your binary.
 

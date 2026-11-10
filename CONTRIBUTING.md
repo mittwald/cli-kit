@@ -7,13 +7,13 @@ pieces more robust or more broadly useful are welcome.
 
 ## Getting started
 
-You need Go 1.24 or newer and [golangci-lint](https://golangci-lint.run) v2.
+You need Go 1.27 or newer and [golangci-lint](https://golangci-lint.run) v2.
 
 ```shell
 git clone https://github.com/mittwald/cli-kit.git
 cd cli-kit
 make check      # vet, lint, race tests, cross-compile, go mod tidy check
-make test-min   # run the tests on Go 1.24, the oldest supported release
+make test-min   # run the tests on Go 1.27.0, the oldest supported release
 ```
 
 Interactive packages (`pick`, `live`, `progress`) are tested without a
@@ -30,8 +30,8 @@ directive.
 - **Few dependencies.** Every dependency is paid for by every user of the
   module. Prefer the standard library and `golang.org/x`. Explain any new
   dependency in the pull request.
-- **Go 1.24 compatibility.** Do not use standard-library APIs newer than the
-  `go` directive in `go.mod`. CI runs the tests on Go 1.24 to catch this.
+- **Go 1.27 compatibility.** Do not use standard-library APIs newer than the
+  `go` directive in `go.mod`. CI runs the tests on Go 1.27.0 to catch this.
 - **Platforms.** Everything must build on Linux, macOS and Windows. Features
   that only work on Unix degrade gracefully elsewhere and say so in their
   documentation.

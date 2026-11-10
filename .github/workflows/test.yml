@@ -13,13 +13,13 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.14.0
+          version: v2.15.0
       - name: go mod tidy
         run: go mod tidy -diff
 
@@ -31,10 +31,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         # The oldest supported release (go.mod) and the current one.
-        go: ["1.24", stable]
+        go: ["1.27.0", stable]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
       - name: Build
@@ -51,8 +51,8 @@ jobs:
       matrix:
         goos: [linux, darwin, windows, freebsd]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - run: go build ./...

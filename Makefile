@@ -1,7 +1,7 @@
 GO ?= go
 GOLANGCI_LINT ?= golangci-lint
 # The oldest Go release cli-kit supports; keep it in sync with go.mod.
-GO_MIN ?= go1.24.0
+GO_MIN ?= go1.27.0
 
 .PHONY: all test race cover lint fmt vet cross test-min tidy-check check
 

@@ -222,8 +222,7 @@ func TestHardenCompletionRejectsUnknownShell(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `unknown command "tcsh"`) {
 		t.Fatalf("completion tcsh: err = %v", err)
 	}
-	var scriptErr *ScriptError
-	if errors.As(err, &scriptErr) {
+	if _, ok := errors.AsType[*ScriptError](err); ok {
 		t.Error("an unknown shell was reported as a script error")
 	}
 	if _, err := execute(t, root, "completion"); err != nil {

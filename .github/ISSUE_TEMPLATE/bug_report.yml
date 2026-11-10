@@ -52,7 +52,7 @@ body:
     attributes:
       label: Environment
       description: Go version, operating system, terminal emulator and shell.
-      placeholder: go1.24.9, macOS 15, iTerm2, zsh
+      placeholder: go1.27.3, macOS 26, iTerm2, zsh
     validations:
       required: true
 

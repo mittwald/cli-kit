@@ -504,9 +504,7 @@ func TestConcurrentLifecycle(t *testing.T) {
 
 	var workers sync.WaitGroup
 	for worker := range 5 {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
+		workers.Go(func() {
 			for step := range 20 {
 				switch worker {
 				case 0:
@@ -521,7 +519,7 @@ func TestConcurrentLifecycle(t *testing.T) {
 					b.BeginWait()()
 				}
 			}
-		}()
+		})
 	}
 	workers.Wait()
 	b.Finish(true)
@@ -536,11 +534,9 @@ func TestConcurrentStartsKeepOneBar(t *testing.T) {
 	b := New(&buf, Options{Width: 40, Force: true})
 	var starts sync.WaitGroup
 	for range 8 {
-		starts.Add(1)
-		go func() {
-			defer starts.Done()
+		starts.Go(func() {
 			b.Start(10, 30*time.Second)
-		}()
+		})
 	}
 	starts.Wait()
 
