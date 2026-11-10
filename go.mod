@@ -1,6 +1,6 @@
 module github.com/mittwald/cli-kit
 
-go 1.24.0
+go 1.26.0
 
 require (
 	github.com/goccy/go-yaml v1.19.2
@@ -9,8 +9,8 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	github.com/zalando/go-keyring v0.2.8
-	golang.org/x/sys v0.38.0
-	golang.org/x/term v0.37.0
+	golang.org/x/sys v0.50.0
+	golang.org/x/term v0.47.0
 )
 
 require (
