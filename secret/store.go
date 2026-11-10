@@ -81,6 +81,9 @@ func (m *Memory) Delete(account string) error {
 // without a Secret Service, a container), with a [FileStore] behind it:
 //
 //   - Get reads primary, and secondary when primary has no secret or fails.
+//     When secondary has no secret either, the error wraps [ErrNotFound],
+//     also when primary failed, so a [Resolver] goes on to prompt; it
+//     wraps primary's failure too.
 //   - Set writes primary, and secondary only when primary fails.
 //   - Delete removes the account from both, so a secret written to the
 //     secondary while the primary was unavailable does not come back. It
@@ -104,7 +107,9 @@ func (f fallback) Get(account string) (string, error) {
 		return "", secondaryErr
 	}
 	if errors.Is(secondaryErr, ErrNotFound) {
-		return "", err
+		// Primary is taken to be unavailable, as in Set and Delete; the
+		// secret is simply not stored yet.
+		return "", errors.Join(secondaryErr, err)
 	}
 	return "", errors.Join(err, secondaryErr)
 }

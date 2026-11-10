@@ -46,7 +46,9 @@ type GitLab struct {
 	// TokenHeader is the header the credential goes in; empty means
 	// [HeaderPrivateToken].
 	TokenHeader string
-	// Client sends the requests; nil means http.DefaultClient.
+	// Client sends the requests; nil means http.DefaultClient. A redirect
+	// to another origin (scheme, host and port) never carries the
+	// credential; the client's own CheckRedirect still applies.
 	Client *http.Client
 	// UserAgent identifies the requests; empty means a generic default.
 	UserAgent string
@@ -72,18 +74,16 @@ func (g *GitLab) requester() requester {
 	if header == "" {
 		header = HeaderPrivateToken
 	}
-	return requester{
-		client:    g.Client,
-		token:     g.Token,
-		userAgent: g.UserAgent,
-		authorize: func(req *http.Request, token string) {
-			if header == HeaderAuthorization {
-				req.Header.Set(HeaderAuthorization, "Bearer "+token)
-				return
-			}
-			req.Header.Set(header, token)
-		},
+	r := requester{
+		client:     g.Client,
+		token:      g.Token,
+		userAgent:  g.UserAgent,
+		authHeader: header,
 	}
+	if http.CanonicalHeaderKey(header) == HeaderAuthorization {
+		r.authScheme = "Bearer"
+	}
+	return r
 }
 
 func (g *GitLab) check() error {

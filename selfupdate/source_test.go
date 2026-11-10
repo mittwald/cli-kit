@@ -194,3 +194,73 @@ func TestGitHubLatestAndDownload(t *testing.T) {
 		t.Fatal("Latest without Owner succeeded")
 	}
 }
+
+func TestCredentialNotSentToOtherOrigins(t *testing.T) {
+	for _, header := range []string{HeaderPrivateToken, HeaderJobToken, HeaderDeployToken, HeaderAuthorization} {
+		t.Run(header, func(t *testing.T) {
+			var storageSaw []string
+			var gitlab *httptest.Server
+			// storage serves the file after the first redirect and bounces
+			// a second request back to the GitLab origin.
+			storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				storageSaw = append(storageSaw, r.Header.Get(header))
+				if r.URL.Path == "/bounce" {
+					http.Redirect(w, r, gitlab.URL+"/back", http.StatusFound)
+					return
+				}
+				_, _ = io.WriteString(w, "archive")
+			}))
+			defer storage.Close()
+			var backSaw string
+			gitlab = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/back":
+					backSaw = r.Header.Get(header)
+					_, _ = io.WriteString(w, "archive")
+				case strings.HasSuffix(r.URL.Path, "/a.tar.gz"):
+					http.Redirect(w, r, storage.URL+"/blob", http.StatusFound)
+				case strings.HasSuffix(r.URL.Path, "/b.tar.gz"):
+					http.Redirect(w, r, storage.URL+"/bounce", http.StatusFound)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer gitlab.Close()
+
+			g := &GitLab{BaseURL: gitlab.URL, Project: "example/tool", Package: "tool", TokenHeader: header,
+				Token: func(context.Context, bool) (string, error) { return "secret-token", nil }}
+			for _, name := range []string{"a.tar.gz", "b.tar.gz"} {
+				body, err := g.Download(context.Background(), Release{Tag: "v1.0.0"}, name)
+				if err != nil {
+					t.Fatalf("Download %s = %v", name, err)
+				}
+				readAll(t, body)
+			}
+			for _, got := range storageSaw {
+				if got != "" {
+					t.Errorf("storage host received %s %q", header, got)
+				}
+			}
+			if backSaw != "" {
+				t.Errorf("redirect back to the origin received %s %q after leaving it", header, backSaw)
+			}
+		})
+	}
+}
+
+func TestCredentialRedirectPolicyKeepsClientPolicy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	defer srv.Close()
+	stop := errors.New("no redirects")
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return stop }}
+	g := &GitLab{BaseURL: srv.URL, Project: "example/tool", Client: client,
+		Token: func(context.Context, bool) (string, error) { return "tok", nil }}
+	if _, err := g.Latest(context.Background()); !errors.Is(err, stop) {
+		t.Fatalf("Latest = %v, want the client's CheckRedirect error", err)
+	}
+	if client.CheckRedirect == nil {
+		t.Fatal("client's CheckRedirect was replaced")
+	}
+}

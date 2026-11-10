@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -72,8 +74,10 @@ type requester struct {
 	userAgent string
 	// headers are set on every request.
 	headers map[string]string
-	// authorize sets the credential on a request.
-	authorize func(req *http.Request, token string)
+	// authHeader is the header the credential goes in. authScheme, when
+	// set, precedes the credential, as in "Bearer <token>".
+	authHeader string
+	authScheme string
 }
 
 // get sends a GET request and returns the response when its status is 200.
@@ -147,18 +151,71 @@ func (r requester) send(ctx context.Context, url, accept, token string) (*http.R
 	for name, value := range r.headers {
 		req.Header.Set(name, value)
 	}
-	if token != "" && r.authorize != nil {
-		r.authorize(req, token)
-	}
 	client := r.client
 	if client == nil {
 		client = http.DefaultClient
+	}
+	if token != "" && r.authHeader != "" {
+		value := token
+		if r.authScheme != "" {
+			value = r.authScheme + " " + token
+		}
+		req.Header.Set(r.authHeader, value)
+		client = withoutCredentialOnRedirect(client, r.authHeader)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("selfupdate: %w", err)
 	}
 	return resp, nil
+}
+
+// withoutCredentialOnRedirect returns a copy of client that removes header
+// from a redirected request once the redirects left the origin (scheme,
+// host and port) of the first request. The HTTP client copies all headers
+// of the first request to each redirect and only drops Authorization and
+// cookies on its own, so a GitLab token header would otherwise reach the
+// storage host a package download redirects to. The client's own
+// CheckRedirect still applies.
+func withoutCredentialOnRedirect(client *http.Client, header string) *http.Client {
+	c := *client
+	next := client.CheckRedirect
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		left := !sameOrigin(req.URL, via[0].URL)
+		for _, prev := range via[1:] {
+			left = left || !sameOrigin(prev.URL, via[0].URL)
+		}
+		if left {
+			req.Header.Del(header)
+		}
+		if next != nil {
+			return next(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &c
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(hostPort(a), hostPort(b))
+}
+
+// hostPort returns the URL's host with the scheme's default port made
+// explicit, so that "example.com" and "example.com:443" compare equal.
+func hostPort(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		switch strings.ToLower(u.Scheme) {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(u.Hostname(), port)
 }
 
 func drain(resp *http.Response) {

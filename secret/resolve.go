@@ -349,20 +349,34 @@ func (r *Resolver) stored() (string, bool, error) {
 	return value, value != "", nil
 }
 
-// readFirstLine reads the first line of rd, bounded by MaxLen. A trailing
-// CR is dropped, so a file written on Windows works; interior spaces are
-// kept, because a passphrase may contain them.
+// readFirstLine reads the first line of rd, bounded by MaxLen. It stops at
+// the newline, so a pipe that stays open after the secret does not block,
+// and the rest of stdin stays unread. A trailing CR is dropped, so a file
+// written on Windows works; interior spaces are kept, because a passphrase
+// may contain them.
 func (r *Resolver) readFirstLine(rd io.Reader) (string, error) {
 	limit := r.MaxLen
 	if limit <= 0 {
 		limit = DefaultMaxLen
 	}
-	data, err := io.ReadAll(io.LimitReader(rd, int64(limit)))
-	if err != nil {
-		return "", err
+	data := make([]byte, 0, min(limit, 256))
+	var b [1]byte
+	for len(data) < limit {
+		n, err := rd.Read(b[:])
+		if n == 1 {
+			if b[0] == '\n' {
+				break
+			}
+			data = append(data, b[0])
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
 	}
-	line, _, _ := strings.Cut(string(data), "\n")
-	line = strings.TrimSuffix(line, "\r")
+	line := strings.TrimSuffix(string(data), "\r")
 	if r.TrimSpace {
 		line = strings.TrimSpace(line)
 	}

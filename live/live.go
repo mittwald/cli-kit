@@ -3,6 +3,7 @@ package live
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/mattn/go-runewidth"
@@ -87,7 +88,9 @@ func (l *Live) Draw(lines []string) error {
 	l.last = frame
 	l.drawn = nil
 	if l.Fits(lines) {
-		l.drawn = lines
+		// A copy: the caller may reuse its slice for the next frame, while
+		// the screen still shows these lines.
+		l.drawn = slices.Clone(lines)
 	}
 	return nil
 }

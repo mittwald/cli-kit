@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stdinFile returns a file holding what a pipe would have carried. A real
@@ -273,5 +274,48 @@ func TestTTYPromptWithoutTerminal(t *testing.T) {
 	openTTY = func() (*os.File, error) { return os.Open(writeFile(t, "x")) }
 	if _, err := TTYPrompt(Request{Label: "Password"}); !errors.Is(err, ErrNoSource) {
 		t.Fatalf("TTYPrompt on a file = %v, want ErrNoSource", err)
+	}
+}
+
+func TestResolvePromptsWhenFallbackStoreIsEmpty(t *testing.T) {
+	var asked []Request
+	r := Resolver{Account: "default", Store: Fallback(failing{}, &Memory{}),
+		Stdin: stdinFile(t, ""), Prompt: answers(&asked, "typed")}
+	if got, source, err := r.Resolve(); err != nil || got != "typed" || source != SourcePrompt {
+		t.Fatalf("Resolve = %q, %v, %v; want the prompt's answer", got, source, err)
+	}
+}
+
+func TestResolveStopsAtNewlineOfAnOpenPipe(t *testing.T) {
+	rd, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+	defer wr.Close()
+	if _, err := wr.WriteString("piped\nmore input\n"); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		value string
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		r := Resolver{Stdin: rd}
+		value, _, err := r.Resolve()
+		done <- result{value, err}
+	}()
+	select {
+	case res := <-done:
+		if res.err != nil || res.value != "piped" {
+			t.Fatalf("Resolve = %q, %v", res.value, res.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Resolve waited for the pipe to close")
+	}
+	rest := make([]byte, 64)
+	if n, _ := rd.Read(rest); string(rest[:n]) != "more input\n" {
+		t.Fatalf("Resolve consumed past the first line: left %q", rest[:n])
 	}
 }

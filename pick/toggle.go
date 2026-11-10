@@ -1,6 +1,7 @@
 package pick
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -128,10 +129,13 @@ type switches struct {
 	initial    []bool
 	labelWidth int
 	cursor     int
-	nested     bool
-	checklist  bool
-	color      bool
-	theme      theme.Theme
+	// top is the first row drawn and visible how many are, so the block
+	// fits on the terminal; visible is all rows until resize says less.
+	top, visible int
+	nested       bool
+	checklist    bool
+	color        bool
+	theme        theme.Theme
 }
 
 func newSwitches(opts switchOptions, color bool) *switches {
@@ -145,6 +149,7 @@ func newSwitches(opts switchOptions, color bool) *switches {
 		checklist: opts.checklist,
 		color:     color,
 		theme:     theme.Active(),
+		visible:   len(opts.rows),
 	}
 	for i, row := range opts.rows {
 		s.initial[i] = row.value
@@ -164,9 +169,45 @@ func (s *switches) values() []bool {
 	return values
 }
 
-// resize is what makes switches a screenState; the set is short enough that
-// there is nothing to refit.
-func (s *switches) resize(int, int) {}
+// chrome is how many lines the block spends on something other than rows:
+// the title, the note where there is one, the blank lines around the rows,
+// the key line, and the position line when not all rows fit.
+func (s *switches) chrome(windowed bool) int {
+	lines := 4
+	if s.note != "" {
+		lines++
+	}
+	if windowed {
+		lines++
+	}
+	return lines
+}
+
+// resize fits the rows to the terminal height, as the list does: a block
+// taller than the terminal would scroll, and the in-place redraw would then
+// repaint the wrong lines. Rows that do not fit scroll with the cursor.
+func (s *switches) resize(maxVisible, height int) {
+	all := len(s.rows)
+	fits := (height <= 0 || all <= height-s.chrome(false)-1) && (maxVisible <= 0 || all <= maxVisible)
+	if fits {
+		s.visible = all
+	} else {
+		s.visible = min(visibleRows(maxVisible, height, s.chrome(true)), all)
+	}
+	s.scrollToCursor()
+}
+
+func (s *switches) windowed() bool { return s.visible < len(s.rows) }
+
+func (s *switches) scrollToCursor() {
+	if s.cursor < s.top {
+		s.top = s.cursor
+	}
+	if s.cursor >= s.top+s.visible {
+		s.top = s.cursor - s.visible + 1
+	}
+	s.top = max(min(s.top, len(s.rows)-s.visible), 0)
+}
 
 func (s *switches) apply(k key) action {
 	switch k.kind {
@@ -178,12 +219,16 @@ func (s *switches) apply(k key) action {
 		return actionInterrupt
 	case keyUp:
 		s.cursor = max(s.cursor-1, 0)
+		s.scrollToCursor()
 	case keyDown:
 		s.cursor = min(s.cursor+1, len(s.rows)-1)
+		s.scrollToCursor()
 	case keyHome, keyPageUp:
 		s.cursor = 0
+		s.scrollToCursor()
 	case keyEnd, keyPageDown:
 		s.cursor = len(s.rows) - 1
+		s.scrollToCursor()
 	case keyTab:
 		s.throw()
 	case keyRune:
@@ -236,16 +281,19 @@ func (s *switches) render(n int) []string {
 		n = 80
 	}
 	p := s.painter()
-	lines := make([]string, 0, len(s.rows)+6)
+	lines := make([]string, 0, s.visible+s.chrome(true))
 	lines = append(lines, drawParts(titleParts(s.title, s.subject, s.theme), n, p))
 	if s.note != "" {
 		lines = append(lines, p.paint(s.theme.Muted, cut(s.note, n)))
 	}
 	lines = append(lines, "")
-	for i := range s.rows {
+	for i := s.top; i < min(s.top+s.visible, len(s.rows)); i++ {
 		lines = append(lines, s.renderRow(i, n))
 	}
 	lines = append(lines, "")
+	if s.windowed() {
+		lines = append(lines, p.paint(s.theme.Muted, cut(fmt.Sprintf("%d of %d", s.cursor+1, len(s.rows)), n)))
+	}
 	lines = append(lines, p.paint(s.theme.Muted, s.hint(n)))
 	return lines
 }

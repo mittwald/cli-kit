@@ -369,8 +369,14 @@ func spacedRoot() *cobra.Command {
 	}
 	deploy.Flags().String("previous", "", "previous version")
 	root.PersistentFlags().BoolP("verbose", "v", false, "verbose")
+	root.PersistentFlags().Bool("dry-run", false, "dry run")
+	root.PersistentFlags().String("output", "", "output format")
 	AllowSpacedBool(deploy.Flags(), "active", "stable", "hidden")
-	root.AddCommand(deploy)
+	AllowSpacedBool(root.PersistentFlags(), "dry-run")
+	// status has a --stable flag of its own that is not marked.
+	status := &cobra.Command{Use: "status", RunE: func(*cobra.Command, []string) error { return nil }}
+	status.Flags().Bool("stable", false, "stable only")
+	root.AddCommand(deploy, status)
 	return root
 }
 
@@ -385,17 +391,35 @@ func TestJoinSpacedBoolValues(t *testing.T) {
 			[]string{"deploy", "app-1.2", "--stable", "false", "--apply"},
 			[]string{"deploy", "app-1.2", "--stable=false", "--apply"}},
 		{"several at once",
-			[]string{"--active", "false", "--stable", "true"},
-			[]string{"--active=false", "--stable=true"}},
+			[]string{"deploy", "--active", "false", "--stable", "true"},
+			[]string{"deploy", "--active=false", "--stable=true"}},
 		{"bare flag stands alone", []string{"--stable", "--apply"}, []string{"--stable", "--apply"}},
 		{"equals form untouched", []string{"--stable=false"}, []string{"--stable=false"}},
 		{"flag at the end", []string{"deploy", "--stable"}, []string{"deploy", "--stable"}},
 		{"unmarked flags keep their positional", []string{"--previous", "false", "--apply", "true"}, []string{"--previous", "false", "--apply", "true"}},
 		{"non-boolean value not swallowed", []string{"--stable", "app-1.2"}, []string{"--stable", "app-1.2"}},
-		{"case is normalized", []string{"--active", "FALSE"}, []string{"--active=false"}},
+		{"case is normalized", []string{"deploy", "--active", "FALSE"}, []string{"deploy", "--active=false"}},
 		{"nothing after -- is touched",
-			[]string{"--stable", "false", "--", "--active", "false"},
-			[]string{"--stable=false", "--", "--active", "false"}},
+			[]string{"deploy", "--stable", "false", "--", "--active", "false"},
+			[]string{"deploy", "--stable=false", "--", "--active", "false"}},
+		{"flags before the command name",
+			[]string{"--stable", "false", "deploy"},
+			[]string{"--stable=false", "deploy"}},
+		{"flags of the selected command only",
+			[]string{"status", "--stable", "false"},
+			[]string{"status", "--stable", "false"}},
+		{"marked flags are not joined on the root",
+			[]string{"--active", "false"},
+			[]string{"--active", "false"}},
+		{"marked persistent flag before a command",
+			[]string{"--dry-run", "false", "deploy", "--stable", "true"},
+			[]string{"--dry-run=false", "deploy", "--stable=true"}},
+		{"marked persistent flag in a command",
+			[]string{"status", "--dry-run", "true"},
+			[]string{"status", "--dry-run=true"}},
+		{"flag values do not select a command",
+			[]string{"--output", "deploy", "status", "--stable", "false"},
+			[]string{"--output", "deploy", "status", "--stable", "false"}},
 		{"short flags are not candidates", []string{"-v", "false"}, []string{"-v", "false"}},
 		{"completion keeps the word being completed",
 			[]string{cobra.ShellCompRequestCmd, "deploy", "--active", "false", "--stable", "fal"},
