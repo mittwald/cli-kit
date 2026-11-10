@@ -78,3 +78,11 @@ func TestSetColorMode(t *testing.T) {
 		t.Error("a buffer can be animated")
 	}
 }
+
+func TestSetColorModeRejectsUnknownModes(t *testing.T) {
+	t.Cleanup(func() { SetColorMode(ColorAuto) })
+	SetColorMode(ColorMode(42))
+	if got := CurrentColorMode(); got != ColorAuto {
+		t.Errorf("unknown mode recorded as %v, want auto", got)
+	}
+}

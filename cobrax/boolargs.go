@@ -63,7 +63,9 @@ func JoinSpacedBoolValues(root *cobra.Command, args []string) []string {
 			return append(joined, args[i:]...)
 		}
 		name, long := strings.CutPrefix(arg, "--")
-		if long && marked[name] && i+1 < limit && isBoolLiteral(args[i+1]) {
+		// limit never exceeds len(args); the second bound states it for
+		// readers and for gosec.
+		if long && marked[name] && i+1 < limit && i+1 < len(args) && isBoolLiteral(args[i+1]) {
 			joined = append(joined, arg+"="+strings.ToLower(args[i+1]))
 			i++
 			continue

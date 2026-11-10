@@ -2,6 +2,7 @@ package pick
 
 import (
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -27,16 +28,9 @@ func numbered(t *testing.T, rows, count int) *list {
 	t.Helper()
 	cells := make([][]string, 0, count)
 	for i := range count {
-		cells = append(cells, []string{"1.4." + itoa(i)})
+		cells = append(cells, []string{"1.4." + strconv.Itoa(i)})
 	}
 	return testList(t, rows, cells...)
-}
-
-func itoa(n int) string {
-	if n < 10 {
-		return string(rune('0' + n))
-	}
-	return itoa(n/10) + string(rune('0'+n%10))
 }
 
 func typeText(l screenState, text string) {

@@ -57,8 +57,14 @@ func ParseColorMode(value string) (ColorMode, error) {
 var colorMode atomic.Int32
 
 // SetColorMode records the color choice for the whole process. Call it once,
-// after parsing flags and before writing output.
-func SetColorMode(m ColorMode) { colorMode.Store(int32(m)) }
+// after parsing flags and before writing output. A value other than the
+// three defined modes records [ColorAuto].
+func SetColorMode(m ColorMode) {
+	if m < ColorAuto || m > ColorNever {
+		m = ColorAuto
+	}
+	colorMode.Store(int32(m))
+}
 
 // CurrentColorMode returns the mode [SetColorMode] last recorded.
 func CurrentColorMode() ColorMode { return ColorMode(colorMode.Load()) }

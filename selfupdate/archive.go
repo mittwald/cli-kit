@@ -97,7 +97,9 @@ func zipEntries(data []byte) ([]archiveEntry, error) {
 			return nil, fmt.Errorf("selfupdate: read zip entry %s: %w", f.Name, err)
 		}
 		content, err := readEntry(rc, f.Name)
-		rc.Close()
+		// A read-only zip entry has nothing to flush; a failed close after a
+		// complete read changes nothing about the content.
+		_ = rc.Close()
 		if err != nil {
 			return nil, err
 		}

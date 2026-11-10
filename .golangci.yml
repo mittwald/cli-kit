@@ -8,6 +8,7 @@ linters:
     - errorlint
     - forcetypeassert
     - godot
+    - gosec
     - misspell
     - modernize
     - nilerr
@@ -34,6 +35,12 @@ linters:
         linters:
           - forcetypeassert
           - unparam
+      # Tests re-execute their own binary to check signal handling, and
+      # create files with the exact modes the code under test must handle.
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G204|G302|G306|G702"
 
 formatters:
   enable:

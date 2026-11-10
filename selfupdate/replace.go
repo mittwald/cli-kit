@@ -79,12 +79,10 @@ func ReplaceExecutable(path string, binary []byte) error {
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath) // fails harmlessly once renamed
 	if _, err := tmp.Write(binary); err != nil {
-		tmp.Close()
-		return fmt.Errorf("selfupdate: write new binary: %w", err)
+		return fmt.Errorf("selfupdate: write new binary: %w", errors.Join(err, tmp.Close()))
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("selfupdate: write new binary: %w", err)
+		return fmt.Errorf("selfupdate: write new binary: %w", errors.Join(err, tmp.Close()))
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("selfupdate: write new binary: %w", err)

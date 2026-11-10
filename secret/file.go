@@ -133,16 +133,13 @@ func (s *FileStore) Set(account, value string) error {
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath) // fails harmlessly once renamed
 	if _, err := io.WriteString(tmp, value); err != nil {
-		tmp.Close()
-		return fmt.Errorf("secret: write %s: %w", path, err)
+		return fmt.Errorf("secret: write %s: %w", path, errors.Join(err, tmp.Close()))
 	}
 	if err := tmp.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
-		tmp.Close()
-		return fmt.Errorf("secret: write %s: %w", path, err)
+		return fmt.Errorf("secret: write %s: %w", path, errors.Join(err, tmp.Close()))
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("secret: write %s: %w", path, err)
+		return fmt.Errorf("secret: write %s: %w", path, errors.Join(err, tmp.Close()))
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("secret: write %s: %w", path, err)

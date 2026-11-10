@@ -4,6 +4,7 @@ package pick
 
 import (
 	"errors"
+	"math"
 	"os"
 	"time"
 
@@ -15,7 +16,11 @@ import (
 // stdin is not in Go's runtime poller, so os.File deadlines are not supported
 // on it.
 func readable(f *os.File, timeout time.Duration) bool {
-	fds := []unix.PollFd{{Fd: int32(f.Fd()), Events: unix.POLLIN}}
+	fd := f.Fd()
+	if fd > math.MaxInt32 {
+		return false
+	}
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 	deadline := time.Now().Add(timeout)
 	for {
 		left := max(time.Until(deadline), 0)
