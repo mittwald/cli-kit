@@ -139,8 +139,10 @@ func WriteFile(path string, data []byte) error {
 		return fmt.Errorf("%w: %s is a symbolic link", ErrInsecureFile, path)
 	}
 	// CreateTemp creates the file with mode 0600, and a rename within one
-	// directory replaces the old file atomically.
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	// directory replaces the old file atomically. The temporary name has a
+	// fixed length, so a destination name close to the file system's limit
+	// still fits.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".secret-*")
 	if err != nil {
 		return fmt.Errorf("secret: write %s: %w", path, err)
 	}
