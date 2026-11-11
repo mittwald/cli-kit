@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	gokeyring "github.com/zalando/go-keyring"
@@ -315,5 +316,19 @@ func TestWriteFileRefusesSymlink(t *testing.T) {
 	}
 	if _, err := os.Stat(target); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("WriteFile wrote through the symlink")
+	}
+}
+
+// The temporary file does not grow with the destination's name, so a name
+// near the usual 255-byte limit still works.
+func TestWriteFileLongName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, strings.Repeat("a", 250))
+	if err := WriteFile(path, []byte("x")); err != nil {
+		t.Fatalf("WriteFile with a 250-byte name = %v", err)
+	}
+	store := &FileStore{Dir: dir}
+	if err := store.Set(strings.Repeat("b", 240), "x"); err != nil {
+		t.Fatalf("Set with a 240-byte account = %v", err)
 	}
 }
