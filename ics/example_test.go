@@ -65,6 +65,64 @@ func ExampleCalendar_WriteTo() {
 	// END:VCALENDAR
 }
 
+// A feed that lists the participants before the status, quotes every name
+// and writes a line break in a name as a space, for clients that do not
+// decode RFC 6868.
+func ExampleCalendar_WriteTo_participants() {
+	name := func(value string) ics.Param {
+		return ics.Param{Name: "CN", Value: value, Quote: true, LineBreak: " "}
+	}
+	cal := ics.Calendar{
+		ProdID: "-//Example//Example CLI//EN",
+		Stamp:  time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC),
+		EventPropertyOrder: []string{
+			"UID", "DTSTAMP", "DTSTART", "DTEND", "SUMMARY", "ORGANIZER", "ATTENDEE",
+		},
+		Events: []ics.Event{{
+			UID:     "planning-20261110@example.com",
+			Start:   time.Date(2026, 11, 10, 13, 0, 0, 0, time.UTC),
+			End:     time.Date(2026, 11, 10, 14, 0, 0, 0, time.UTC),
+			Summary: "Planning",
+			Status:  "confirmed",
+			Props: []ics.Property{
+				{
+					Name:   "ATTENDEE",
+					Params: []ics.Param{name("Ann Other"), {Name: "PARTSTAT", Value: "ACCEPTED"}},
+					Value:  "mailto:ann@example.com",
+				},
+				{
+					Name:   "ORGANIZER",
+					Params: []ics.Param{name("Jane Doe\nTeam Lead")},
+					Value:  "mailto:jane@example.com",
+				},
+			},
+		}},
+	}
+	var out strings.Builder
+	if _, err := cal.WriteTo(&out); err != nil {
+		panic(err)
+	}
+	_, _ = os.Stdout.WriteString(strings.ReplaceAll(out.String(), "\r\n", "\n"))
+	// Output:
+	// BEGIN:VCALENDAR
+	// VERSION:2.0
+	// PRODID:-//Example//Example CLI//EN
+	// CALSCALE:GREGORIAN
+	// METHOD:PUBLISH
+	// BEGIN:VEVENT
+	// UID:planning-20261110@example.com
+	// DTSTAMP:20261110T080000Z
+	// DTSTART:20261110T130000Z
+	// DTEND:20261110T140000Z
+	// SUMMARY:Planning
+	// ORGANIZER;CN="Jane Doe Team Lead":mailto:jane@example.com
+	// ATTENDEE;CN="Ann Other";PARTSTAT=ACCEPTED:mailto:ann@example.com
+	// STATUS:CONFIRMED
+	// TRANSP:OPAQUE
+	// END:VEVENT
+	// END:VCALENDAR
+}
+
 func ExampleFold() {
 	for _, line := range ics.Fold("DESCRIPTION:" + strings.Repeat("abcdefghij", 8)) {
 		fmt.Printf("%2d %q\n", len(line), line[:min(len(line), 16)])

@@ -3,6 +3,7 @@ package ics
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -197,8 +198,8 @@ func TestParamValue(t *testing.T) {
 		{"two\nlines", "two^nlines"},
 		{`say "hi"`, "say ^'hi^'"},
 	} {
-		if got := paramValue(tc.in); got != tc.want {
-			t.Errorf("paramValue(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := (Param{Value: tc.in}).encode(); got != tc.want {
+			t.Errorf("encode(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -290,5 +291,284 @@ func TestWriteError(t *testing.T) {
 	_, err := Calendar{ProdID: "-//x//y//EN", Stamp: testStamp}.WriteTo(failingWriter{})
 	if err == nil || err.Error() != "write failed" {
 		t.Fatalf("err = %v, want the writer's error", err)
+	}
+}
+
+// eventLines returns the content lines of the first event in an encoded
+// calendar, unfolded, without BEGIN:VEVENT and END:VEVENT.
+func eventLines(t *testing.T, calendar string) []string {
+	t.Helper()
+	unfolded := strings.ReplaceAll(calendar, "\r\n ", "")
+	_, rest, ok := strings.Cut(unfolded, "BEGIN:VEVENT\r\n")
+	if !ok {
+		t.Fatalf("no event in:\n%s", calendar)
+	}
+	body, _, ok := strings.Cut(rest, "END:VEVENT\r\n")
+	if !ok {
+		t.Fatalf("unterminated event in:\n%s", calendar)
+	}
+	return strings.Split(strings.TrimSuffix(body, "\r\n"), "\r\n")
+}
+
+// checkPhysicalLines checks that every line of an encoded calendar is valid
+// UTF-8 of at most 75 octets and ends in CRLF.
+func checkPhysicalLines(t *testing.T, calendar string) {
+	t.Helper()
+	if !strings.HasSuffix(calendar, "\r\n") {
+		t.Errorf("calendar does not end in CRLF: %q", calendar)
+	}
+	for i, line := range strings.Split(strings.TrimSuffix(calendar, "\r\n"), "\r\n") {
+		if len(line) > maxLineOctets {
+			t.Errorf("physical line %d is %d octets: %q", i, len(line), line)
+		}
+		if !utf8.ValidString(line) {
+			t.Errorf("physical line %d is not valid UTF-8: %q", i, line)
+		}
+		if strings.ContainsAny(line, "\r\n") {
+			t.Errorf("physical line %d holds a bare line break: %q", i, line)
+		}
+	}
+}
+
+func TestParamQuote(t *testing.T) {
+	for _, tc := range []struct {
+		param Param
+		want  string
+	}{
+		{Param{Value: "Jane Doe"}, "Jane Doe"},
+		{Param{Value: "Jane Doe", Quote: true}, `"Jane Doe"`},
+		{Param{Value: "REQ-PARTICIPANT", Quote: true}, `"REQ-PARTICIPANT"`},
+		{Param{Value: "", Quote: true}, `""`},
+		// Quoting does not replace the RFC 6868 encoding of what a
+		// quoted-string cannot hold.
+		{Param{Value: `Smith "Jr."; ^x`, Quote: true}, `"Smith ^'Jr.^'; ^^x"`},
+		{Param{Value: "two\nlines", Quote: true}, `"two^nlines"`},
+		{Param{Value: "a\x00b\x7fc\td", Quote: true}, "\"abc\td\""},
+		{Param{Value: "bad\xff\xfe", Quote: true}, "\"bad\uFFFD\""},
+		// A value that needs quotes is quoted either way.
+		{Param{Value: "Doe, Jane", Quote: false}, `"Doe, Jane"`},
+		{Param{Value: "Doe, Jane", Quote: true}, `"Doe, Jane"`},
+	} {
+		if got := tc.param.encode(); got != tc.want {
+			t.Errorf("%+v encodes as %q, want %q", tc.param, got, tc.want)
+		}
+	}
+}
+
+func TestParamLineBreak(t *testing.T) {
+	for _, tc := range []struct {
+		value, lineBreak, want string
+	}{
+		// Empty keeps the RFC 6868 encoding, a CRLF pair counted as one.
+		{"a\nb", "", "a^nb"},
+		{"a\r\nb", "", "a^nb"},
+		{"a\rb", "", "a^nb"},
+		// A replacement replaces each CR and each LF.
+		{"a\nb", " ", "a b"},
+		{"a\rb", " ", "a b"},
+		{"a\r\nb", " ", "a  b"},
+		{"\na\n", " ", " a "},
+		// The replacement is encoded like the value around it.
+		{"a\nb", "^", "a^^b"},
+		{"a\nb", `"`, "a^'b"},
+		{"a\nb", ", ", `"a, b"`},
+		{"a\nb", "\x07", "ab"},
+		{"a\nb", "\xff", "a\uFFFDb"},
+		// Other control characters are dropped, invalid UTF-8 repaired.
+		{"a\n\x00b\x1b", " ", "a b"},
+		{"\xff\xfea\nb", " ", "\uFFFDa b"},
+	} {
+		got := (Param{Value: tc.value, LineBreak: tc.lineBreak}).encode()
+		if got != tc.want {
+			t.Errorf("value %q with LineBreak %q encodes as %q, want %q", tc.value, tc.lineBreak, got, tc.want)
+		}
+	}
+}
+
+// The parameter options change the value, not how the line around it is
+// escaped and folded.
+func TestParamOptionsFold(t *testing.T) {
+	name := `Ünal "Ü" Øvergård-Ålesund ^ ` + strings.Repeat("ß€𝄞", 8) + "\r\nTeam"
+	attendee := Property{
+		Name: "ATTENDEE",
+		Params: []Param{
+			{Name: "CN", Value: name, Quote: true, LineBreak: " "},
+			{Name: "ROLE", Value: "REQ-PARTICIPANT"},
+		},
+		Value: "mailto:unal@example.com",
+	}
+	wantLine := `ATTENDEE;CN="Ünal ^'Ü^' Øvergård-Ålesund ^^ ` + strings.Repeat("ß€𝄞", 8) +
+		`  Team";ROLE=REQ-PARTICIPANT:mailto:unal@example.com`
+	if got := attendee.String(); got != wantLine {
+		t.Fatalf("String() = %q, want %q", got, wantLine)
+	}
+	got := render(t, Calendar{Events: []Event{{UID: "x", Start: testStamp, Props: []Property{attendee}}}})
+	checkPhysicalLines(t, got)
+	if !strings.Contains(got, "\r\n ") {
+		t.Errorf("the long line was not folded:\n%s", got)
+	}
+	if !slices.Contains(eventLines(t, got), wantLine) {
+		t.Errorf("unfolding does not restore %q:\n%s", wantLine, got)
+	}
+}
+
+func TestEventPropertyOrder(t *testing.T) {
+	attendee := func(mail string) Property {
+		return Property{Name: "ATTENDEE", Params: []Param{{Name: "CN", Value: mail, Quote: true}}, Value: "mailto:" + mail}
+	}
+	ev := Event{
+		UID:          "order",
+		Start:        testStamp,
+		End:          testStamp.Add(time.Hour),
+		Summary:      strings.Repeat("Planning, weekly; ", 5),
+		Location:     "Room 1",
+		Status:       "confirmed",
+		Class:        "private",
+		LastModified: testStamp,
+		Props: []Property{
+			attendee("ann@example.com"),
+			TextProperty("X-NOTE", "a;b"),
+			{Name: "organizer", Value: "mailto:jane@example.com"},
+			attendee("bob@example.com"),
+		},
+	}
+	original := slices.Clone(ev.Props)
+	summary := "SUMMARY:" + strings.Repeat(`Planning\, weekly\; `, 5)
+
+	got := render(t, Calendar{
+		// Names match regardless of case; a repeated name keeps its first
+		// position, and a name no property has is skipped.
+		EventPropertyOrder: []string{"uid", "DTSTAMP", "DTSTART", "DTEND", "ORGANIZER", "Attendee", "SUMMARY", "X-MISSING", "UID", "STATUS"},
+		Events:             []Event{ev},
+	})
+	want := []string{
+		"UID:order",
+		"DTSTAMP:20260731T103456Z",
+		"DTSTART:20260731T103456Z",
+		"DTEND:20260731T113456Z",
+		"ORGANIZER:mailto:jane@example.com",
+		`ATTENDEE;CN="ann@example.com":mailto:ann@example.com`,
+		`ATTENDEE;CN="bob@example.com":mailto:bob@example.com`,
+		summary,
+		"STATUS:CONFIRMED",
+		// The properties the order does not name, in the default order.
+		"LOCATION:Room 1",
+		"TRANSP:OPAQUE",
+		"CLASS:PRIVATE",
+		"LAST-MODIFIED:20260731T103456Z",
+		`X-NOTE:a\;b`,
+	}
+	if lines := eventLines(t, got); !slices.Equal(lines, want) {
+		t.Errorf("event lines:\n got %q\nwant %q", lines, want)
+	}
+	// Moved properties are still folded.
+	checkPhysicalLines(t, got)
+	if !slices.EqualFunc(ev.Props, original, func(a, b Property) bool { return a.String() == b.String() }) {
+		t.Errorf("writing reordered the caller's Props: %v", ev.Props)
+	}
+
+	// Without an order, Props follow the standard properties as given.
+	got = render(t, Calendar{Events: []Event{ev}})
+	want = []string{
+		"UID:order",
+		"DTSTAMP:20260731T103456Z",
+		"DTSTART:20260731T103456Z",
+		"DTEND:20260731T113456Z",
+		summary,
+		"LOCATION:Room 1",
+		"STATUS:CONFIRMED",
+		"TRANSP:OPAQUE",
+		"CLASS:PRIVATE",
+		"LAST-MODIFIED:20260731T103456Z",
+		`ATTENDEE;CN="ann@example.com":mailto:ann@example.com`,
+		`X-NOTE:a\;b`,
+		"ORGANIZER:mailto:jane@example.com",
+		`ATTENDEE;CN="bob@example.com":mailto:bob@example.com`,
+	}
+	if lines := eventLines(t, got); !slices.Equal(lines, want) {
+		t.Errorf("default event lines:\n got %q\nwant %q", lines, want)
+	}
+}
+
+func TestMissingEnd(t *testing.T) {
+	start := time.Date(2026, 12, 24, 9, 30, 0, 0, time.UTC)
+	west := time.FixedZone("UTC-5", -5*60*60)
+	for _, tc := range []struct {
+		name   string
+		mode   EndMode
+		allDay bool
+		zone   *time.Location
+		want   string // the DTEND line; empty when there is none
+	}{
+		{"default timed", EndDefault, false, nil, ""},
+		{"default all-day", EndDefault, true, nil, "DTEND;VALUE=DATE:20261225"},
+		{"omit timed", EndOmit, false, nil, ""},
+		{"omit all-day", EndOmit, true, nil, ""},
+		{"derive timed", EndDerive, false, nil, "DTEND:20261224T093000Z"},
+		{"derive all-day", EndDerive, true, nil, "DTEND;VALUE=DATE:20261225"},
+		// The next day is counted from the start's date in the zone, not
+		// converted into the zone once more.
+		{"derive all-day west", EndDerive, true, west, "DTEND;VALUE=DATE:20261225"},
+		{"as given timed", EndAsGiven, false, nil, "DTEND:00010101T000000Z"},
+		{"as given all-day", EndAsGiven, true, nil, "DTEND;VALUE=DATE:00010101"},
+		// The zero time falls on the last day of year 0 west of UTC.
+		{"as given all-day west", EndAsGiven, true, west, "DTEND;VALUE=DATE:00001231"},
+		{"unknown mode timed", EndMode(99), false, nil, ""},
+		{"unknown mode all-day", EndMode(99), true, nil, "DTEND;VALUE=DATE:20261225"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := render(t, Calendar{MissingEnd: tc.mode, TimeZone: tc.zone, Events: []Event{{UID: "x", Start: start, AllDay: tc.allDay}}})
+			var dtend []string
+			for _, line := range eventLines(t, got) {
+				if strings.HasPrefix(line, "DTEND") {
+					dtend = append(dtend, line)
+				}
+			}
+			switch {
+			case tc.want == "" && len(dtend) > 0:
+				t.Errorf("DTEND written: %q", dtend)
+			case tc.want != "" && !slices.Equal(dtend, []string{tc.want}):
+				t.Errorf("DTEND = %q, want %q", dtend, tc.want)
+			}
+		})
+	}
+
+	// An End that is set is written whatever the mode.
+	for _, mode := range []EndMode{EndDefault, EndOmit, EndDerive, EndAsGiven} {
+		got := render(t, Calendar{MissingEnd: mode, Events: []Event{
+			{UID: "timed", Start: start, End: start.Add(time.Hour)},
+			{UID: "allday", Start: start, End: start.AddDate(0, 0, 3), AllDay: true},
+		}})
+		mustContain(t, got, "DTEND:20261224T103000Z\r\n", "DTEND;VALUE=DATE:20261227\r\n")
+	}
+}
+
+func TestVerbatimUIDs(t *testing.T) {
+	const uid = " a\tb\u00a0c d;e,f\\g\r\n\x00h\x7fi "
+	got := render(t, Calendar{VerbatimUIDs: true, Events: []Event{{UID: uid, Start: testStamp}}})
+	// Spaces, tab and no-break space stay, and so do the characters TEXT
+	// would escape, as in the default; the control characters go.
+	mustContain(t, got, "UID: a\tb\u00a0c d;e,f\\ghi \r\n")
+
+	got = render(t, Calendar{Events: []Event{{UID: uid, Start: testStamp}}})
+	mustContain(t, got, "UID:ab\u00a0cd;e,f\\ghi\r\n")
+
+	// Invalid UTF-8 is repaired as in TEXT values: one U+FFFD per run.
+	got = render(t, Calendar{VerbatimUIDs: true, Events: []Event{{UID: "a\xff\xfeb", Start: testStamp}}})
+	mustContain(t, got, "UID:a\uFFFDb\r\n")
+
+	// A long UID is folded without splitting a character.
+	long := strings.Repeat("€ä𝄞 ", 20) + "@example.com"
+	got = render(t, Calendar{VerbatimUIDs: true, Events: []Event{{UID: long, Start: testStamp}}})
+	checkPhysicalLines(t, got)
+	if lines := eventLines(t, got); lines[0] != "UID:"+long {
+		t.Errorf("unfolded UID line = %q, want %q", lines[0], "UID:"+long)
+	}
+
+	for _, blank := range []string{"", " \t", "\r\n\x00", "\u00a0\u2003"} {
+		_, err := Calendar{ProdID: "-//x//y//EN", VerbatimUIDs: true, Events: []Event{{UID: blank}}}.Marshal()
+		if !errors.Is(err, ErrMissingUID) {
+			t.Errorf("UID %q: err = %v, want ErrMissingUID", blank, err)
+		}
 	}
 }
