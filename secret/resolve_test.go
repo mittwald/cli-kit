@@ -2,6 +2,7 @@ package secret
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,11 +153,13 @@ func TestResolveNeverReturnsAnEmptyAnswer(t *testing.T) {
 
 func TestResolveConfirm(t *testing.T) {
 	var asked []Request
-	r := Resolver{Label: "Password", Stdin: stdinFile(t, ""), Confirm: true, Prompt: answers(&asked, "a", "a")}
+	r := Resolver{Name: "password", Label: "Password to encrypt the export", Stdin: stdinFile(t, ""),
+		Confirm: true, Prompt: answers(&asked, "a", "a")}
 	if got, _, err := r.Resolve(); err != nil || got != "a" {
 		t.Fatalf("Resolve = %q, %v", got, err)
 	}
-	if len(asked) != 2 || !asked[1].Repeat || asked[1].Prompt() != "Repeat Password: " {
+	if len(asked) != 2 || asked[0].Prompt() != "Password to encrypt the export: " ||
+		!asked[1].Repeat || asked[1].Prompt() != "Repeat password: " {
 		t.Fatalf("asked %+v", asked)
 	}
 
@@ -180,14 +183,69 @@ func TestResolveWithoutAnySourceNamesTheOptions(t *testing.T) {
 	t.Cleanup(func() { openTTY = defaultOpenTTY })
 	t.Setenv("EXAMPLE_TOKEN", "")
 
-	r := Resolver{Label: "token", Env: "EXAMPLE_TOKEN", FileFlag: "--token-file", Stdin: stdinFile(t, "")}
+	r := Resolver{Name: "token", Env: "EXAMPLE_TOKEN", FileFlag: "--token-file", Stdin: stdinFile(t, "")}
 	_, _, err := r.Resolve()
 	if !errors.Is(err, ErrNoSource) {
 		t.Fatalf("Resolve = %v, want ErrNoSource", err)
 	}
-	for _, want := range []string{"$EXAMPLE_TOKEN", "--token-file", "stdin", "terminal"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not mention %q", err, want)
+	const want = "no token available: set $EXAMPLE_TOKEN, pass --token-file, pipe one to stdin, or run this on a terminal"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
+	// With stdin taken, piping is no option.
+	r.StdinBusy = true
+	if _, _, err := r.Resolve(); err == nil || strings.Contains(err.Error(), "stdin") {
+		t.Errorf("busy stdin: error = %v, want no stdin option", err)
+	}
+}
+
+// The messages are meant for the user of the command as they are, and
+// still match the package's sentinel errors.
+func TestResolveMessages(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	_, openErr := os.Open(missing) // its wording differs between systems
+	empty := writeFile(t, "\n")
+	for _, tc := range []struct {
+		name string
+		r    Resolver
+		want string
+		is   error
+	}{
+		{"missing file", Resolver{Name: "password", File: missing},
+			"reading password file: " + openErr.Error(), fs.ErrNotExist},
+		{"empty file", Resolver{Name: "password", File: empty}, "no password found in " + empty, ErrEmpty},
+		{"dash with busy stdin", Resolver{Name: "password", File: "-", FileFlag: "--password-file", StdinBusy: true},
+			"--password-file - reads the password from stdin, which is already being read for the input; name a file instead", nil},
+		{"dash without flag", Resolver{Name: "password", File: "-", StdinBusy: true},
+			`the file "-" reads the password from stdin, which is already being read for the input; name a file instead`, nil},
+		{"dash with empty stdin", Resolver{Name: "password", File: "-", Stdin: stdinFile(t, "")}, "no password found in stdin", ErrEmpty},
+		{"empty answer", Resolver{Name: "password", Stdin: stdinFile(t, ""), Prompt: answers(new([]Request), "")},
+			"empty password", ErrEmpty},
+		{"mismatch", Resolver{Name: "password", Stdin: stdinFile(t, ""), Confirm: true, Prompt: answers(new([]Request), "a", "b")},
+			"passwords do not match", ErrMismatch},
+		{"failing prompt", Resolver{Name: "password", Stdin: stdinFile(t, ""),
+			Prompt: func(Request) (string, error) { return "", errors.New("terminal: EOF") }},
+			"reading password: terminal: EOF", nil},
+		{"default name", Resolver{File: empty}, "no secret found in " + empty, ErrEmpty},
+	} {
+		_, _, err := tc.r.Resolve()
+		if err == nil || err.Error() != tc.want {
+			t.Errorf("%s: error = %v, want %q", tc.name, err, tc.want)
+		}
+		if tc.is != nil && !errors.Is(err, tc.is) {
+			t.Errorf("%s: error %v does not match %v", tc.name, err, tc.is)
+		}
+	}
+}
+
+func TestResolveLabelDefaultsToName(t *testing.T) {
+	for _, tc := range []struct{ name, prompt string }{
+		{"password", "Password: "}, {"API token", "API token: "}, {"", "Secret: "},
+	} {
+		var asked []Request
+		r := Resolver{Name: tc.name, Stdin: stdinFile(t, ""), Prompt: answers(&asked, "x")}
+		if _, _, err := r.Resolve(); err != nil || len(asked) != 1 || asked[0].Prompt() != tc.prompt {
+			t.Errorf("Name %q: asked %+v, %v; want prompt %q", tc.name, asked, err, tc.prompt)
 		}
 	}
 }
@@ -225,7 +283,7 @@ func TestLookupNeverPromptsOrReadsStdin(t *testing.T) {
 
 func TestSaveAndForget(t *testing.T) {
 	store := &Memory{}
-	r := Resolver{Label: "token", Account: "default", Store: store, Env: "EXAMPLE_TOKEN", File: "/run/secrets/token"}
+	r := Resolver{Name: "token", Account: "default", Store: store, Env: "EXAMPLE_TOKEN", File: "/run/secrets/token"}
 	if err := r.Save(""); !errors.Is(err, ErrEmpty) {
 		t.Fatalf("Save empty = %v", err)
 	}
@@ -244,10 +302,14 @@ func TestSaveAndForget(t *testing.T) {
 	if err := r.Forget(SourcePrompt); err != nil {
 		t.Fatalf("Forget prompt = %v", err)
 	}
-	for source, want := range map[Source]string{SourceEnv: "$EXAMPLE_TOKEN", SourceFile: "/run/secrets/token", SourceStdin: "stdin"} {
+	for source, want := range map[Source]string{
+		SourceEnv:   "the token in $EXAMPLE_TOKEN was rejected; replace it, or unset it to be asked for one",
+		SourceFile:  "the token in /run/secrets/token was rejected; replace the file's contents",
+		SourceStdin: "the token piped to stdin was rejected",
+	} {
 		err := r.Forget(source)
-		if !errors.Is(err, ErrFixedSource) || !strings.Contains(err.Error(), want) {
-			t.Errorf("Forget(%v) = %v, want ErrFixedSource naming %q", source, err, want)
+		if !errors.Is(err, ErrFixedSource) || err.Error() != want {
+			t.Errorf("Forget(%v) = %v, want ErrFixedSource saying %q", source, err, want)
 		}
 	}
 	if err := (&Resolver{}).Save("x"); err != nil {

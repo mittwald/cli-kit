@@ -121,21 +121,35 @@ func (s *FileStore) Set(account, value string) error {
 	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
 		return fmt.Errorf("secret: create %s: %w", s.Dir, err)
 	}
+	return WriteFile(path, []byte(value))
+}
+
+// WriteFile writes data to path for its owner's eyes only: the file gets
+// mode 0600 (outside Windows) before any data reaches it, and replaces an
+// existing file atomically, so a reader sees the old contents or the new
+// ones, never part of either, and the new contents are never readable by
+// others, whatever mode the old file had. Use it for anything that holds a
+// credential, such as a token cache.
+//
+// The directory must exist. A symbolic link at path is refused with an
+// error wrapping [ErrInsecureFile], so a link planted there cannot redirect
+// the write.
+func WriteFile(path string, data []byte) error {
 	if info, err := os.Lstat(path); err == nil && info.Mode()&fs.ModeSymlink != 0 {
 		return fmt.Errorf("%w: %s is a symbolic link", ErrInsecureFile, path)
 	}
 	// CreateTemp creates the file with mode 0600, and a rename within one
 	// directory replaces the old file atomically.
-	tmp, err := os.CreateTemp(s.Dir, ".secret-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("secret: write %s: %w", path, err)
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath) // fails harmlessly once renamed
-	if _, err := io.WriteString(tmp, value); err != nil {
+	if err := tmp.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
 		return fmt.Errorf("secret: write %s: %w", path, errors.Join(err, tmp.Close()))
 	}
-	if err := tmp.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
+	if _, err := tmp.Write(data); err != nil {
 		return fmt.Errorf("secret: write %s: %w", path, errors.Join(err, tmp.Close()))
 	}
 	if err := tmp.Sync(); err != nil {

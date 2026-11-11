@@ -2,6 +2,7 @@ package secret
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -273,5 +274,46 @@ func TestRedact(t *testing.T) {
 	want := "token=[REDACTED] again [REDACTED] and [REDACTED]"
 	if got != want {
 		t.Fatalf("Redact = %q, want %q", got, want)
+	}
+}
+
+func TestWriteFileReplacesPrivately(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token-cache.json")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFile(path, []byte("new")); err != nil {
+		t.Fatalf("WriteFile = %v", err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "new" {
+		t.Fatalf("contents = %q, %v", data, err)
+	}
+	if info, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
+		t.Fatalf("mode = %v, %v; want 0600 whatever the old file had", info.Mode(), err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("directory holds %d entries, want only the file", len(entries))
+	}
+	if err := WriteFile(filepath.Join(dir, "missing", "file"), []byte("x")); err == nil {
+		t.Fatal("WriteFile into a missing directory succeeded")
+	}
+}
+
+func TestWriteFileRefusesSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links need privileges on Windows")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere")
+	link := filepath.Join(dir, "token-cache.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFile(link, []byte("x")); !errors.Is(err, ErrInsecureFile) {
+		t.Fatalf("WriteFile through a symlink = %v, want ErrInsecureFile", err)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("WriteFile wrote through the symlink")
 	}
 }

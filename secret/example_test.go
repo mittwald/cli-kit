@@ -19,7 +19,7 @@ func ExampleResolver() {
 		return
 	}
 	r := &secret.Resolver{
-		Label:     "API token",
+		Name:      "API token",
 		Account:   "default",
 		Store:     secret.Fallback(secret.Keyring{Service: "example-tool"}, files),
 		Env:       "EXAMPLE_TOKEN",
