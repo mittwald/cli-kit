@@ -17,6 +17,23 @@
 // All-day events are written as dates ("DTSTART;VALUE=DATE:20261224"). The
 // date is read in [Calendar.TimeZone] when set, or else in the location the
 // time value carries. As in RFC 5545, the end of an all-day event is
-// exclusive: a one-day event on 24 December ends on 25 December. A zero End
-// makes an all-day event last one day.
+// exclusive: a one-day event on 24 December ends on 25 December. By default,
+// a zero End makes an all-day event last one day.
+//
+// # Encoding choices
+//
+// RFC 5545 leaves some choices to the writer. The defaults suit a new feed;
+// a program that moves an existing feed to this package can set the fields
+// below so the feed keeps its bytes, since subscribed clients see changed
+// bytes as edited events and a changed UID as a new event:
+//
+//   - [Calendar.EventPropertyOrder] writes event properties in a given
+//     order, such as ORGANIZER and ATTENDEE before STATUS.
+//   - [Calendar.MissingEnd] leaves DTEND out, derives it or writes the zero
+//     time for an event without an End.
+//   - [Calendar.VerbatimUIDs] writes UIDs as given instead of removing
+//     whitespace from them.
+//   - [Param.Quote] quotes a parameter value even when it needs no quotes.
+//   - [Param.LineBreak] replaces line breaks in a parameter value instead of
+//     encoding them as RFC 6868 "^n".
 package ics
