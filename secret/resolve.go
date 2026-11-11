@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	xterm "golang.org/x/term"
 
@@ -71,8 +73,12 @@ const DefaultMaxLen = 4096
 
 // Request describes one interactive question for a [PromptFunc].
 type Request struct {
-	// Label names the secret, such as "Password" or "API token".
+	// Label is the question, such as "Password" or "Password to encrypt
+	// the export".
 	Label string
+	// Name is the secret as the messages call it, such as "password". The
+	// second question of a confirmed entry asks to repeat it.
+	Name string
 	// Hint is optional text to show before the first question, such as
 	// where to create a token and which scopes it needs.
 	Hint string
@@ -80,11 +86,16 @@ type Request struct {
 	Repeat bool
 }
 
-// Prompt returns the text to put in front of the input field: "API token: ",
-// or "Repeat API token: " for the second question of a confirmed entry.
+// Prompt returns the text to put in front of the input field: "Password to
+// encrypt the export: ", or "Repeat password: " for the second question of a
+// confirmed entry.
 func (r Request) Prompt() string {
 	if r.Repeat {
-		return "Repeat " + r.Label + ": "
+		name := r.Name
+		if name == "" {
+			name = r.Label
+		}
+		return "Repeat " + name + ": "
 	}
 	return r.Label + ": "
 }
@@ -104,10 +115,19 @@ func (r Request) Prompt() string {
 type PromptFunc func(Request) (string, error)
 
 // Resolver finds one secret. See the package documentation for the order
-// in which it tries its sources. All fields are optional except Label; a
-// source whose field is empty is skipped.
+// in which it tries its sources. All fields are optional; a source whose
+// field is empty is skipped.
+//
+// Its errors are worded for the user of the command, such as "no password
+// found in /run/secrets/pw", and match the package's sentinel errors
+// ([ErrEmpty], [ErrNoSource], [ErrMismatch], [ErrFixedSource]) with
+// [errors.Is].
 type Resolver struct {
-	// Label names the secret in prompts and errors, such as "Password".
+	// Name is the secret as the messages call it, such as "password" or
+	// "API token". Empty means "secret".
+	Name string
+	// Label is the question an interactive prompt asks, such as "Password
+	// to encrypt the export". Empty means Name with a capital first letter.
 	Label string
 	// Account is the name the secret is stored under in Store. It is
 	// required when Store is set.
@@ -163,7 +183,7 @@ func (r *Resolver) Resolve() (string, Source, error) {
 		if !term.IsTerminal(stdin) {
 			value, err := r.readFirstLine(stdin)
 			if err != nil {
-				return "", SourceNone, fmt.Errorf("secret: read %s from stdin: %w", r.label(), err)
+				return "", SourceNone, fail(nil, err, "reading %s from stdin", r.name())
 			}
 			// An empty stdin (</dev/null, a closed pipe) is no secret, but it is
 			// not necessarily a mistake either: fall through to the store.
@@ -245,13 +265,12 @@ func (r *Resolver) Forget(source Source) error {
 	case SourcePrompt, SourceNone:
 		return nil
 	case SourceEnv:
-		return fmt.Errorf("%w: the %s in $%s was rejected; replace it, or unset it to be asked for one",
-			ErrFixedSource, r.label(), r.Env)
+		return fail(ErrFixedSource, nil, "the %s in $%s was rejected; replace it, or unset it to be asked for one",
+			r.name(), r.Env)
 	case SourceFile:
-		return fmt.Errorf("%w: the %s in %s was rejected; replace the file's contents",
-			ErrFixedSource, r.label(), r.File)
+		return fail(ErrFixedSource, nil, "the %s in %s was rejected; replace the file's contents", r.name(), r.File)
 	default:
-		return fmt.Errorf("%w: the %s piped on stdin was rejected", ErrFixedSource, r.label())
+		return fail(ErrFixedSource, nil, "the %s piped to stdin was rejected", r.name())
 	}
 }
 
@@ -262,11 +281,22 @@ func (r *Resolver) check() error {
 	return nil
 }
 
-func (r *Resolver) label() string {
-	if r.Label == "" {
+func (r *Resolver) name() string {
+	if r.Name == "" {
 		return "secret"
 	}
-	return r.Label
+	return r.Name
+}
+
+// label is the prompt's question: Label, or Name with a capital first
+// letter ("password" asks "Password: ", "API token" asks "API token: ").
+func (r *Resolver) label() string {
+	if r.Label != "" {
+		return r.Label
+	}
+	name := r.name()
+	first, size := utf8.DecodeRuneInString(name)
+	return string(unicode.ToUpper(first)) + name[size:]
 }
 
 func (r *Resolver) stdin() *os.File {
@@ -282,29 +312,29 @@ func (r *Resolver) explicit() (string, Source, error) {
 	switch {
 	case r.File == "-":
 		if r.StdinBusy {
-			return "", SourceNone, fmt.Errorf("secret: %s - reads the %s from stdin, which carries the command's input; name a file instead",
-				r.fileFlag(), r.label())
+			return "", SourceNone, fail(nil, nil, "%s reads the %s from stdin, which is already being read for the input; name a file instead",
+				r.dashFile(), r.name())
 		}
 		value, err := r.readFirstLine(r.stdin())
 		if err != nil {
-			return "", SourceNone, fmt.Errorf("secret: read %s from stdin: %w", r.label(), err)
+			return "", SourceNone, fail(nil, err, "reading %s from stdin", r.name())
 		}
 		if value == "" {
-			return "", SourceNone, fmt.Errorf("%w: no %s on stdin", ErrEmpty, r.label())
+			return "", SourceNone, fail(ErrEmpty, nil, "no %s found in stdin", r.name())
 		}
 		return value, SourceStdin, nil
 	case r.File != "":
 		f, err := os.Open(r.File)
 		if err != nil {
-			return "", SourceNone, fmt.Errorf("secret: read %s file: %w", r.label(), err)
+			return "", SourceNone, fail(nil, err, "reading %s file", r.name())
 		}
 		defer f.Close()
 		value, err := r.readFirstLine(f)
 		if err != nil {
-			return "", SourceNone, fmt.Errorf("secret: read %s file %s: %w", r.label(), r.File, err)
+			return "", SourceNone, fail(nil, err, "reading %s from %s", r.name(), r.File)
 		}
 		if value == "" {
-			return "", SourceNone, fmt.Errorf("%w: no %s in %s", ErrEmpty, r.label(), r.File)
+			return "", SourceNone, fail(ErrEmpty, nil, "no %s found in %s", r.name(), r.File)
 		}
 		return value, SourceFile, nil
 	}
@@ -314,11 +344,13 @@ func (r *Resolver) explicit() (string, Source, error) {
 	return "", SourceNone, nil
 }
 
-func (r *Resolver) fileFlag() string {
+// dashFile names File "-" in a message: the flag with its value, or the
+// bare dash.
+func (r *Resolver) dashFile() string {
 	if r.FileFlag == "" {
-		return "the secret file"
+		return `the file "-"`
 	}
-	return r.FileFlag
+	return r.FileFlag + " -"
 }
 
 func (r *Resolver) fromEnv() (string, bool) {
@@ -388,38 +420,38 @@ func (r *Resolver) ask() (string, error) {
 	if prompt == nil {
 		prompt = TTYPrompt
 	}
-	req := Request{Label: r.label(), Hint: r.Hint}
+	req := Request{Label: r.label(), Name: r.name(), Hint: r.Hint}
 	value, err := prompt(req)
 	if err != nil {
-		return "", r.noSource(err)
+		return "", r.promptFailed(err)
 	}
 	if r.TrimSpace {
 		value = strings.TrimSpace(value)
 	}
 	if value == "" {
-		return "", fmt.Errorf("%w: no %s entered", ErrEmpty, r.label())
+		return "", fail(ErrEmpty, nil, "empty %s", r.name())
 	}
 	if r.Confirm {
 		req.Repeat = true
 		again, err := prompt(req)
 		if err != nil {
-			return "", r.noSource(err)
+			return "", r.promptFailed(err)
 		}
 		if r.TrimSpace {
 			again = strings.TrimSpace(again)
 		}
 		if again != value {
-			return "", ErrMismatch
+			return "", fail(ErrMismatch, nil, "%ss do not match", r.name())
 		}
 	}
 	return value, nil
 }
 
-// noSource rewords a missing terminal into the sources the user could
-// have offered instead.
-func (r *Resolver) noSource(err error) error {
+// promptFailed words a failed prompt. A missing terminal becomes the list
+// of sources the user could have offered instead.
+func (r *Resolver) promptFailed(err error) error {
 	if !errors.Is(err, ErrNoSource) {
-		return fmt.Errorf("secret: read %s: %w", r.label(), err)
+		return fail(nil, err, "reading %s", r.name())
 	}
 	var options []string
 	if r.Env != "" {
@@ -429,10 +461,41 @@ func (r *Resolver) noSource(err error) error {
 		options = append(options, "pass "+r.FileFlag)
 	}
 	if !r.StdinBusy {
-		options = append(options, "pipe it to stdin")
+		options = append(options, "pipe one to stdin")
 	}
 	options = append(options, "run this on a terminal")
-	return fmt.Errorf("%w: no %s found; %s", ErrNoSource, r.label(), joinOr(options))
+	return fail(ErrNoSource, nil, "no %s available: %s", r.name(), joinOr(options))
+}
+
+// resolveError is how a Resolver reports a failure: its message is meant
+// for the user of the command as it is, while errors.Is still finds the
+// sentinel error it belongs to and the cause behind it.
+type resolveError struct {
+	msg   string
+	kind  error
+	cause error
+}
+
+func fail(kind, cause error, format string, args ...any) error {
+	return &resolveError{msg: fmt.Sprintf(format, args...), kind: kind, cause: cause}
+}
+
+func (e *resolveError) Error() string {
+	if e.cause == nil {
+		return e.msg
+	}
+	return e.msg + ": " + e.cause.Error()
+}
+
+func (e *resolveError) Unwrap() []error {
+	var errs []error
+	if e.kind != nil {
+		errs = append(errs, e.kind)
+	}
+	if e.cause != nil {
+		errs = append(errs, e.cause)
+	}
+	return errs
 }
 
 func joinOr(options []string) string {
@@ -461,24 +524,18 @@ func TTYPrompt(req Request) (string, error) {
 	if !term.IsTerminal(tty) {
 		return "", ErrNoSource
 	}
-	out := io.Writer(tty)
+	out, closeOut := promptOutput(tty)
+	defer closeOut()
 	if req.Hint != "" && !req.Repeat {
-		if _, err := fmt.Fprintln(out, req.Hint); err != nil {
-			// The Windows console input buffer cannot be written to.
-			out = os.Stderr
-			_, _ = fmt.Fprintln(out, req.Hint)
-		}
+		_, _ = fmt.Fprintln(out, req.Hint)
 	}
-	if _, err := io.WriteString(out, req.Prompt()); err != nil {
-		out = os.Stderr
-		_, _ = io.WriteString(out, req.Prompt())
-	}
+	_, _ = io.WriteString(out, req.Prompt())
 	value, err := xterm.ReadPassword(int(tty.Fd()))
 	// The terminal swallowed the Enter key along with the echo, so the
 	// cursor is still on the prompt line.
 	_, _ = io.WriteString(out, "\n")
 	if err != nil {
-		return "", fmt.Errorf("read from terminal: %w", err)
+		return "", fmt.Errorf("terminal: %w", err)
 	}
 	return string(value), nil
 }

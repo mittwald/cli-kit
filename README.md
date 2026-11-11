@@ -120,7 +120,7 @@ bar.Clear()
 ```go
 files, _ := secret.NewFileStore("example")
 r := &secret.Resolver{
-	Label:   "API token",
+	Name:    "API token",
 	Account: "default",
 	Env:     "EXAMPLE_TOKEN",
 	Store:   secret.Fallback(secret.Keyring{Service: "example"}, files),

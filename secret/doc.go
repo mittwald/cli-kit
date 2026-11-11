@@ -21,6 +21,9 @@
 // [Resolver.Save] remembers it; when a service rejects it,
 // [Resolver.Forget] drops it so the next attempt asks again.
 //
+// [WriteFile] writes a file only its owner can read, such as a token cache,
+// replacing an existing one atomically.
+//
 // Nothing in this package prints, logs or embeds a secret value in an error.
 // [Redact] removes known secrets from text that is about to be logged.
 package secret
