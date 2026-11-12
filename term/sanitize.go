@@ -3,8 +3,6 @@ package term
 import (
 	"strings"
 	"unicode/utf8"
-
-	"github.com/mattn/go-runewidth"
 )
 
 // tabStop is how far apart the tab stops are that [Sanitize] expands tabs
@@ -83,7 +81,6 @@ func sanitizeLine(line string) string {
 		// overwritten what they had changed by the last carriage return.
 		set         = rendition{relative: true}
 		overwritten string
-		column      int
 	)
 	for i := 0; i < len(line); {
 		if n := EscapeLen(line[i:]); n > 0 {
@@ -114,15 +111,14 @@ func sanitizeLine(line string) string {
 		case r == '\r':
 			b.Reset()
 			overwritten = set.sequence()
-			column = 0
 		case r == '\t':
-			spaces := tabStop - column%tabStop
-			b.WriteString(strings.Repeat(" ", spaces))
-			column += spaces
+			// The column counts grapheme clusters as a terminal draws them, so
+			// a joined emoji such as 👩‍💻 is two cells, not one per rune.
+			column := VisibleWidth(b.String())
+			b.WriteString(strings.Repeat(" ", tabStop-column%tabStop))
 		case control(r):
 		default:
 			b.WriteRune(r)
-			column += runewidth.RuneWidth(r)
 		}
 	}
 	return overwritten + b.String()

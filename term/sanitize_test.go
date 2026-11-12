@@ -171,3 +171,11 @@ func FuzzSanitize(f *testing.F) {
 		}
 	})
 }
+
+// A tab stop is counted in cells as a terminal draws them: a joined emoji is
+// one cluster two cells wide, not one cell per rune.
+func TestSanitizeTabAfterJoinedEmoji(t *testing.T) {
+	if got, want := Sanitize("👩‍💻\tx"), "👩‍💻      x"; got != want {
+		t.Fatalf("Sanitize = %q, want %q", got, want)
+	}
+}
