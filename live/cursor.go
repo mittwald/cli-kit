@@ -177,20 +177,25 @@ func (c *Cursor) Hidden() bool {
 	return ok
 }
 
-// RestoreOnPanic shows the cursor, calls the functions registered with
-// [OnRestore], and panics again with the value it recovered. A panic in a
-// goroutine runs only that goroutine's deferred calls before the process
-// dies, so every goroutine that draws while the cursor is hidden should
-// start with
+// RestoreOnPanic shows every cursor this process hid, as [RestoreAll] does,
+// calls the functions registered with [OnRestore], and panics again with the
+// value it recovered. A panic in a goroutine runs only that goroutine's
+// deferred calls before the process dies, so every goroutine that draws
+// while the cursor is hidden should start with
 //
 //	defer cursor.RestoreOnPanic()
 //
-// It has to be called directly by a deferred statement. A nil Cursor has
-// nothing to show and passes the panic on all the same.
+// Showing c alone would not do: a terminal that another Cursor hid as well
+// stays hidden until that one shows it, and in a dying process it never
+// gets to. A program that recovers the panic further up and goes on finds
+// all its cursors shown.
+//
+// It has to be called directly by a deferred statement. A nil Cursor passes
+// the panic on all the same.
 func (c *Cursor) RestoreOnPanic() {
 	if recovered := recover(); recovered != nil {
 		wait := startRestoreHooks()
-		c.changeNow(toShown)
+		changeAll(snapshot(hidden), toShown)
 		wait()
 		panic(recovered)
 	}

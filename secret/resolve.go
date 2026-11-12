@@ -491,7 +491,10 @@ func (r *Resolver) readFirstLine(rd io.Reader) (string, error) {
 				break
 			}
 			data = append(data, b[0])
-			if tooLong(data, limit) {
+			// The first bytes of a byte order mark exceed a short limit
+			// before they are one: they are judged once they are complete,
+			// or turned out to be something else.
+			if !startsByteOrderMark(data) && tooLong(data, limit) {
 				if textErr := checkText(data); textErr != nil {
 					return "", textErr
 				}
@@ -507,6 +510,11 @@ func (r *Resolver) readFirstLine(rd io.Reader) (string, error) {
 	}
 	if err := checkText(data); err != nil {
 		return "", err
+	}
+	// A line that ended inside what could have become a byte order mark was
+	// not judged above.
+	if tooLong(data, limit) {
+		return "", ErrTooLong
 	}
 	line := strings.TrimSuffix(strings.TrimPrefix(string(data), utf8BOM), "\r")
 	if r.TrimSpace {
@@ -528,6 +536,12 @@ func tooLong(data []byte, limit int) bool {
 		n--
 	}
 	return n > limit
+}
+
+// startsByteOrderMark reports whether data is the beginning of a UTF-8 byte
+// order mark that further bytes have yet to complete.
+func startsByteOrderMark(data []byte) bool {
+	return len(data) < len(utf8BOM) && strings.HasPrefix(utf8BOM, string(data))
 }
 
 // checkText refuses a line that is not text in an encoding a secret can be

@@ -111,6 +111,11 @@ func suspendAndResumeChild(t *testing.T) {
 	t.Helper()
 	command := exec.Command(os.Args[0], "-test.run=^TestSignalSuspendsAndResumesChild$")
 	command.Env = append(os.Environ(), childEnv+"=suspend")
+	// A process group of its own, with this test as the parent outside it
+	// that can continue it. In the group it would inherit, the child is
+	// never stopped where that group is orphaned, as under setsid or in a
+	// container without a shell around the tests.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	output := startChild(t, command)
 
 	output.expect(t, HideCursorSequence, "child did not hide the cursor")

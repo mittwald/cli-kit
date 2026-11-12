@@ -148,6 +148,39 @@ func TestRestoreOnPanicRestoresAndRepanics(t *testing.T) {
 	}
 }
 
+// A panic that nothing recovers ends the process, so every cursor has to be
+// shown, not only the one of the goroutine that died: a terminal two Cursors
+// hid stays hidden until the last of them shows it, and the other one never
+// gets to.
+func TestRestoreOnPanicShowsEveryCursor(t *testing.T) {
+	resetRegistry(t)
+	var shared, other bytes.Buffer
+	application, bar, elsewhere := NewCursor(&shared), NewCursor(&shared), NewCursor(&other)
+	application.Hide()
+	bar.Hide()
+	elsewhere.Hide()
+	shared.Reset()
+	other.Reset()
+
+	func() {
+		defer func() { _ = recover() }()
+		defer bar.RestoreOnPanic()
+		panic("ticker died")
+	}()
+
+	if got := shared.String(); got != ShowCursorSequence {
+		t.Errorf("terminal two cursors hid got %q, want %q", got, ShowCursorSequence)
+	}
+	if got := other.String(); got != ShowCursorSequence {
+		t.Errorf("other terminal got %q, want %q", got, ShowCursorSequence)
+	}
+	for name, c := range map[string]*Cursor{"application": application, "bar": bar, "elsewhere": elsewhere} {
+		if c.Hidden() {
+			t.Errorf("%s cursor still counts as hidden", name)
+		}
+	}
+}
+
 func TestNilCursorIsSafe(t *testing.T) {
 	var c *Cursor
 	c.Hide()

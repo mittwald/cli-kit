@@ -136,6 +136,35 @@ func TestResolveMaxLen(t *testing.T) {
 			t.Errorf("Resolve of %q = %q, %v; want the %d bytes", content, got, err, len(exact))
 		}
 	}
+	// A byte order mark is longer than a short limit: its bytes do not count
+	// while they may still become one, and count once they did not.
+	const bom = "\xef\xbb\xbf"
+	for _, tc := range []struct {
+		content, want string
+		tooLong       bool
+	}{
+		{content: bom + "x\n", want: "x"},
+		{content: bom + "x", want: "x"},
+		{content: bom + "x\r\n", want: "x"},
+		{content: "\xef", want: "\xef"},
+		{content: bom + "xy\n", tooLong: true},
+		{content: "\xef\xbbx\n", tooLong: true},
+		{content: "\xef\xbb\n", tooLong: true},
+		{content: "\xef\xbb", tooLong: true},
+		{content: "\xefx", tooLong: true},
+	} {
+		r := Resolver{Stdin: stdinFile(t, tc.content), MaxLen: 1}
+		got, _, err := r.Resolve()
+		if tc.tooLong {
+			if !errors.Is(err, ErrTooLong) {
+				t.Errorf("Resolve of %q with MaxLen 1 = %q, %v; want ErrTooLong", tc.content, got, err)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("Resolve of %q with MaxLen 1 = %q, %v; want %q", tc.content, got, err, tc.want)
+		}
+	}
 	r = Resolver{Stdin: stdinFile(t, exact+"\rx\n"), MaxLen: 10}
 	if _, _, err := r.Resolve(); !errors.Is(err, ErrTooLong) {
 		t.Errorf("Resolve of a line with a CR inside = %v, want ErrTooLong", err)
