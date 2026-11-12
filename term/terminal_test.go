@@ -119,6 +119,6 @@ func TestAskingLeavesDeadlinesWorking(t *testing.T) {
 		t.Error("the read deadline no longer ends a Read")
 		// End the Read, so that the test does not leave it behind.
 		_, _ = w.Write([]byte{0})
-		<-done
+		t.Logf("the Read ended with %v once there was something to read", <-done)
 	}
 }
