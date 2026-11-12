@@ -38,7 +38,7 @@ func Sanitize(s string) string {
 	if safe(s) {
 		return s
 	}
-	lines := strings.Split(strings.ToValidUTF8(s, "�"), "\n")
+	lines := strings.Split(dropStrings(strings.ToValidUTF8(s, "�")), "\n")
 	for i, line := range lines {
 		lines[i] = sanitizeLine(line)
 	}
@@ -56,7 +56,7 @@ func SanitizeLines(s string) []string {
 	if s == "" {
 		return nil
 	}
-	s = strings.TrimSuffix(strings.ToValidUTF8(s, "�"), "\n")
+	s = strings.TrimSuffix(dropStrings(strings.ToValidUTF8(s, "�")), "\n")
 	lines := strings.Split(s, "\n")
 	var carried rendition
 	for i, line := range lines {
@@ -71,6 +71,26 @@ func SanitizeLines(s string) []string {
 	return lines
 }
 
+// dropStrings removes the escape strings of s (OSC, DCS, SOS, PM and APC,
+// such as a clipboard write), which run to their terminator across newlines,
+// or to the end of s without one, as a terminal reads them. Splitting s into
+// lines first would leave the rest of such a string behind as text.
+func dropStrings(s string) string {
+	if !strings.Contains(s, "\x1b") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b && i+1 < len(s) && strings.IndexByte("]PX^_", s[i+1]) >= 0 {
+			i += EscapeLen(s[i:])
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
 // sanitizeLine is Sanitize for one line, without its newline.
 func sanitizeLine(line string) string {
 	line = strings.TrimRight(line, "\r")
@@ -81,6 +101,12 @@ func sanitizeLine(line string) string {
 		// overwritten what they had changed by the last carriage return.
 		set         = rendition{relative: true}
 		overwritten string
+		// column is the width of b up to segment, the text since the last
+		// tab, which is measured only when the next tab needs it: a tab ends
+		// any grapheme cluster, and measuring b again for every tab would make
+		// a long line of them quadratic.
+		column  int
+		segment strings.Builder
 	)
 	for i := 0; i < len(line); {
 		if n := EscapeLen(line[i:]); n > 0 {
@@ -111,14 +137,20 @@ func sanitizeLine(line string) string {
 		case r == '\r':
 			b.Reset()
 			overwritten = set.sequence()
+			column = 0
+			segment.Reset()
 		case r == '\t':
-			// The column counts grapheme clusters as a terminal draws them, so
-			// a joined emoji such as 👩‍💻 is two cells, not one per rune.
-			column := VisibleWidth(b.String())
-			b.WriteString(strings.Repeat(" ", tabStop-column%tabStop))
+			// Columns count grapheme clusters as a terminal draws them, so a
+			// joined emoji such as 👩‍💻 is two cells, not one per rune.
+			column += VisibleWidth(segment.String())
+			segment.Reset()
+			spaces := tabStop - column%tabStop
+			b.WriteString(strings.Repeat(" ", spaces))
+			column += spaces
 		case control(r):
 		default:
 			b.WriteRune(r)
+			segment.WriteRune(r)
 		}
 	}
 	return overwritten + b.String()

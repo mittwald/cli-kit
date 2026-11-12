@@ -45,3 +45,13 @@ func TestWrapKeepsEscapeOnlyTokensOnTheLine(t *testing.T) {
 		t.Fatalf("Wrap = %q, want %q", got, want)
 	}
 }
+
+// A style sequence opening the line does not take the first word's place:
+// no empty first line.
+func TestWrapLeadingEscapeKeepsTheFirstWord(t *testing.T) {
+	plain := Wrap(" abcdef end", 4, "")
+	styled := Wrap("\x1b[31m abcdef end", 4, "")
+	if StripANSI(styled) != plain {
+		t.Fatalf("styled %q, plain %q", styled, plain)
+	}
+}

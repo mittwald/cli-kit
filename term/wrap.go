@@ -38,9 +38,11 @@ func wrapLine(line string, width int, indent string) string {
 	b.WriteString(lead)
 	column := VisibleWidth(lead)
 	// pending are spaces before an escape sequence standing alone, such as a
-	// trailing reset: they belong before the next visible word.
+	// leading color or a trailing reset: they belong before the next visible
+	// word, and only a visible word ends the first one's place on the line.
 	pending := 0
-	for first := true; ; first = false {
+	first := true
+	for {
 		spaces := len(rest) - len(strings.TrimLeft(rest, " "))
 		rest = rest[spaces:]
 		spaces += pending
@@ -53,13 +55,16 @@ func wrapLine(line string, width int, indent string) string {
 		rest = rest[len(word):]
 		wordWidth := VisibleWidth(word)
 		switch {
-		case wordWidth == 0 && !first:
-			// Nothing to see: it stays on the line it follows and cannot break
-			// it.
+		case wordWidth == 0:
+			// Nothing to see: it stays where it is and cannot break the line.
 			b.WriteString(word)
 			pending = spaces
 			continue
 		case first:
+			// Spaces after a leading escape sequence lead the line, as they
+			// would without it.
+			b.WriteString(strings.Repeat(" ", spaces))
+			column += spaces
 		case column+spaces+wordWidth > width:
 			b.WriteString("\n" + indent)
 			column = VisibleWidth(indent)
@@ -69,6 +74,7 @@ func wrapLine(line string, width int, indent string) string {
 		}
 		b.WriteString(word)
 		column += wordWidth
+		first = false
 	}
 }
 
