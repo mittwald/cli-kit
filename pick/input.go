@@ -2,6 +2,7 @@ package pick
 
 import (
 	"os"
+	"unicode/utf8"
 
 	"github.com/rivo/uniseg"
 
@@ -158,36 +159,111 @@ func clusterBounds(value []rune) []int {
 // clusterBefore is where the cluster in front of caret starts, 0 at the
 // start of the value.
 func clusterBefore(value []rune, caret int) int {
-	before := 0
-	for _, bound := range clusterBounds(value) {
-		if bound >= caret {
-			break
-		}
-		before = bound
+	caret = min(caret, len(value))
+	if caret <= 0 {
+		return 0
 	}
+	// Whether two clusters part in front of a rune is decided by that rune
+	// and those before it, so nothing past the caret has to be read.
+	start := certainBound(value, caret-1)
+	before := start
+	eachBound(value[:caret], start, func(bound int) bool {
+		if bound < caret {
+			before = bound
+		}
+		return bound < caret
+	})
 	return before
 }
 
 // clusterAfter is where the cluster behind caret ends, len(value) at the
 // end of the value.
 func clusterAfter(value []rune, caret int) int {
-	for _, bound := range clusterBounds(value) {
-		if bound > caret {
-			return bound
-		}
+	after := len(value)
+	if caret >= after {
+		return after
 	}
-	return len(value)
+	eachBound(value, certainBound(value, max(caret, 0)), func(bound int) bool {
+		if bound > caret {
+			after = bound
+		}
+		return bound <= caret
+	})
+	return after
 }
 
 // clusterEnd is caret when it stands between two clusters, else the end of
 // the cluster it stands in.
 func clusterEnd(value []rune, caret int) int {
-	for _, bound := range clusterBounds(value) {
+	end := len(value)
+	if caret <= 0 {
+		return 0
+	}
+	if caret >= end {
+		return end
+	}
+	start := certainBound(value, caret)
+	if start == caret {
+		return caret
+	}
+	eachBound(value, start, func(bound int) bool {
 		if bound >= caret {
-			return bound
+			end = bound
+		}
+		return bound < caret
+	})
+	return end
+}
+
+// certainBound returns a position at or in front of pos where two clusters
+// part whatever stands around them: the start of the value, or a place
+// between two printable ASCII characters, which no rule of grapheme
+// clustering joins. The clusters around a caret are found from there
+// instead of from the start of the value, so that an edit costs what its
+// surroundings hold and not what the whole value holds: a long value typed
+// or pasted rune by rune would otherwise be read once for every rune.
+//
+// Text without any ASCII in front of pos, such as a long run of Chinese,
+// is read from its start.
+func certainBound(value []rune, pos int) int {
+	for p := min(pos, len(value)-1); p > 0; p-- {
+		if printableASCII(value[p-1]) && printableASCII(value[p]) {
+			return p
 		}
 	}
-	return len(value)
+	return 0
+}
+
+func printableASCII(r rune) bool { return r >= 0x20 && r <= 0x7e }
+
+// boundWindow is how many runes eachBound reads at first; a cluster is
+// seldom longer than a few.
+const boundWindow = 32
+
+// eachBound calls yield with the end of every cluster of value behind
+// start, in order, until yield returns false. start has to lie between two
+// clusters. It reads value in stretches that grow only while a cluster
+// reaches their end, since converting all of value for a cluster a few
+// runes on would cost as much as reading it all.
+func eachBound(value []rune, start int, yield func(bound int) bool) {
+	for size := boundWindow; start < len(value); size *= 2 {
+		end := min(start+size, len(value))
+		rest, state := string(value[start:end]), -1
+		for rest != "" {
+			var cluster string
+			cluster, rest, _, state = uniseg.FirstGraphemeClusterInString(rest, state)
+			bound := start + utf8.RuneCountInString(cluster)
+			if bound == end && end < len(value) {
+				// The cluster may go on past this stretch: read a longer one
+				// from where it starts.
+				break
+			}
+			if !yield(bound) {
+				return
+			}
+			start = bound
+		}
+	}
 }
 
 // wordStart is where the word ending at caret begins: the separators in

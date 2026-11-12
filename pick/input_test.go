@@ -3,9 +3,11 @@ package pick
 import (
 	"errors"
 	"io"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEditorEditsTheValue(t *testing.T) {
@@ -318,4 +320,86 @@ func TestEditorScrollsALongValue(t *testing.T) {
 	// A prompt that fills the line makes room for the field.
 	e = newEditor(InputOptions{Prompt: "A rather long question: ", Value: "answer"}, false)
 	check("long prompt", "A rather lon…answer", 20)
+}
+
+// The clusters around a caret are found from a place nearby. Every answer
+// has to be the one a reading of the whole value gives, at every position
+// of values that mix what joins runes into clusters with what never does.
+func TestClusterLookupAgreesWithTheWholeValue(t *testing.T) {
+	pieces := []string{
+		"a", "b", " ", "-", "é", "e\u0301", "\u0301", "界", "한", "\u1100\u1161\u11a8",
+		"👨\u200d👩\u200d👧", "\u200d", "👍🏽", "🏽", "🇩🇪", "\U0001f1e9", "1\ufe0f\u20e3", "\ufe0f",
+		strings.Repeat("\u0301", 40), strings.Repeat("界", 70), strings.Repeat("ab", 20),
+	}
+	random := rand.New(rand.NewPCG(1, 2)) //nolint:gosec // a fixed seed keeps the test repeatable; nothing here is secret
+	for range 1000 {
+		var b strings.Builder
+		for range 1 + random.IntN(12) {
+			b.WriteString(pieces[random.IntN(len(pieces))])
+		}
+		value := []rune(b.String())
+		bounds := clusterBounds(value)
+		for caret := 0; caret <= len(value); caret++ {
+			before, after, end := 0, len(value), len(value)
+			for _, bound := range bounds {
+				if bound < caret {
+					before = bound
+				}
+			}
+			for _, bound := range slices.Backward(bounds) {
+				if bound > caret {
+					after = bound
+				}
+				if bound >= caret {
+					end = bound
+				}
+			}
+			if got := clusterBefore(value, caret); got != before {
+				t.Fatalf("clusterBefore(%q, %d) = %d, want %d", string(value), caret, got, before)
+			}
+			if got := clusterAfter(value, caret); got != after {
+				t.Fatalf("clusterAfter(%q, %d) = %d, want %d", string(value), caret, got, after)
+			}
+			if got := clusterEnd(value, caret); got != end {
+				t.Fatalf("clusterEnd(%q, %d) = %d, want %d", string(value), caret, got, end)
+			}
+		}
+	}
+}
+
+// A pasted value arrives rune by rune. Reading the whole value for each of
+// them took seconds for a few thousand runes and left the prompt dead
+// meanwhile; the time a paste takes has to grow with its length, not with
+// the square of it.
+func TestEditorTakesALongPaste(t *testing.T) {
+	const runes, edits = 40000, 4000
+	paste := func(e *editor, n int) {
+		for i := range n {
+			e.apply(key{kind: keyRune, rune: rune('a' + i%26)})
+		}
+	}
+	start := time.Now()
+
+	e := newEditor(InputOptions{Prompt: "Token: "}, false)
+	paste(e, runes)
+	if got := len(e.value); got != runes {
+		t.Fatalf("value holds %d runes, want %d", got, runes)
+	}
+	// In front of what is there, where every rune has text behind it.
+	e.apply(key{kind: keyHome})
+	paste(e, edits)
+	// And taken out again from the end, one character at a time.
+	e.apply(key{kind: keyEnd})
+	for range edits {
+		e.apply(key{kind: keyBackspace})
+	}
+	if got := len(e.value); got != runes {
+		t.Fatalf("value holds %d runes after the deletions, want %d", got, runes)
+	}
+
+	// The first paste alone took more than a minute when every key read
+	// the whole value.
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Errorf("pasting %d runes and editing %d took %v", runes, edits, elapsed)
+	}
 }
