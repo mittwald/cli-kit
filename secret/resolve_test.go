@@ -381,3 +381,33 @@ func TestResolveStopsAtNewlineOfAnOpenPipe(t *testing.T) {
 		t.Fatalf("Resolve consumed past the first line: left %q", rest[:n])
 	}
 }
+
+// Off a terminal InputPrompt asks nothing and writes nothing, and the
+// Resolver names the sources the user could offer instead.
+func TestInputPromptWithoutTerminal(t *testing.T) {
+	in, err := os.Open(writeFile(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	out, err := os.Create(filepath.Join(t.TempDir(), "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	prompt := InputPrompt(in, out, func(*os.File, *os.File, string) (string, error) {
+		t.Error("input was called without a terminal")
+		return "", nil
+	})
+	if _, err := prompt(Request{Label: "Password", Hint: "hint"}); !errors.Is(err, ErrNoSource) {
+		t.Fatalf("prompt = %v, want ErrNoSource", err)
+	}
+	r := Resolver{Name: "API token", Env: "EXAMPLE_TOKEN", StdinBusy: true, Prompt: prompt}
+	if _, _, err := r.Resolve(); !errors.Is(err, ErrNoSource) ||
+		err.Error() != "no API token available: set $EXAMPLE_TOKEN, or run this on a terminal" {
+		t.Errorf("Resolve = %v, want the sources to offer", err)
+	}
+	if written, _ := os.ReadFile(out.Name()); len(written) != 0 {
+		t.Errorf("wrote %q off a terminal", written)
+	}
+}

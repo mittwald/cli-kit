@@ -11,7 +11,7 @@ import (
 
 // Blocks sets a command's progress lines apart from the results it reports.
 // Detail lines are written as a block of their own, with a blank line before
-// and after it, and painted in the theme's Muted style on a terminal that
+// and after it, and painted in the theme's Status style on a terminal that
 // takes color. A detail line that should stand out, a warning by default, is
 // left unpainted. Plain lines are everything else; the first plain line after
 // a block closes it.
@@ -34,7 +34,7 @@ type Blocks struct {
 type BlocksOption func(*Blocks)
 
 // WithDetailStyle paints detail lines in style instead of the active theme's
-// Muted style.
+// Status style.
 func WithDetailStyle(style theme.Style) BlocksOption {
 	return func(b *Blocks) { b.style = style }
 }
@@ -52,7 +52,7 @@ func NewBlocks(w io.Writer, options ...BlocksOption) *Blocks {
 	b := &Blocks{
 		w:         w,
 		color:     term.Colored(w),
-		style:     theme.Active().Muted,
+		style:     theme.Active().Status,
 		highlight: defaultHighlight,
 	}
 	for _, option := range options {

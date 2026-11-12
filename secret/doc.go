@@ -5,7 +5,10 @@
 // system's keyring (macOS Keychain, Windows Credential Manager, the Secret
 // Service on Linux desktops). [FileStore] keeps each secret in a file only
 // its owner can read, for machines without a keyring, such as servers and
-// containers; [Fallback] combines the two. [Memory] is for tests.
+// containers; [Fallback] combines the two, and [Migrating] also moves what
+// the files hold into the keyring once there is one. [Unavailable] stands
+// in for a store that could not be set up. [Memory] is for tests; a test
+// binary never reaches the operating system keyring (see [Keyring]).
 //
 // A [Resolver] decides where a secret comes from on a given run. It tries,
 // in this order:
@@ -14,7 +17,8 @@
 //  2. an environment variable,
 //  3. a piped stdin,
 //  4. the [Store],
-//  5. an interactive prompt with hidden input.
+//  5. an interactive prompt with hidden input: [TTYPrompt], or a text field
+//     of the tool's own through [InputPrompt].
 //
 // Explicit sources come first, so a secret passed for one run always wins
 // over the one remembered from an earlier run. Once the secret proved valid,

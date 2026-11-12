@@ -61,3 +61,16 @@ func ExampleFallback() {
 	fmt.Println(value, errors.Is(err, secret.ErrNotFound))
 	// Output: hunter2 false
 }
+
+// A tool that kept its token in a file before it used the keyring finds it
+// there once more, and moves it into the keyring on the way.
+func ExampleMigrating() {
+	keyring := secret.NewMemory(nil)                                   // stands in for secret.Keyring
+	files := secret.NewMemory(map[string]string{"default": "hunter2"}) // stands in for a *secret.FileStore
+	store := secret.Migrating(keyring, files)
+	value, _ := store.Get("default")
+	_, inFiles := files.Get("default")
+	moved, _ := keyring.Get("default")
+	fmt.Println(value, moved, errors.Is(inFiles, secret.ErrNotFound))
+	// Output: hunter2 hunter2 true
+}

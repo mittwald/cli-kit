@@ -100,3 +100,15 @@ func VersionedAssets(project string) AssetNamer {
 		return project + "-" + rel.Version() + "-" + p.OS + "-" + arch + "." + p.ArchiveExt()
 	}
 }
+
+// VersionedChecksums names a release's checksums file the way GoReleaser's
+// default checksum name_template does, as in "tool_1.2.3_checksums.txt":
+//
+//	{{ .ProjectName }}_{{ .Version }}_checksums.txt
+//
+// Use it as Updater.ChecksumsFor.
+func VersionedChecksums(project string) func(rel Release) string {
+	return func(rel Release) string {
+		return project + "_" + rel.Version() + "_checksums.txt"
+	}
+}

@@ -4,7 +4,9 @@
 // An [Updater] asks a [Source] for the latest release, downloads the archive
 // built for the running platform, verifies it against the release's
 // checksums file, extracts the binary and swaps it in for the running
-// executable. Two sources are included: [GitLab], which reads releases from
+// executable. [Updater.Update] does all of that in one call; a command that
+// reports what it found before it installs calls [Updater.Check] and then
+// [Updater.Install] with the release Check returned. Two sources are included: [GitLab], which reads releases from
 // a GitLab project and downloads from its Generic Package Registry (the one
 // GitLab download path that honors an API token rather than a browser
 // session), and [GitHub], which reads GitHub Releases.
@@ -12,7 +14,9 @@
 // The archive names follow GoReleaser's name_template. [TitleCaseAssets]
 // matches GoReleaser's default template (tool_Linux_x86_64.tar.gz) and
 // [VersionedAssets] the common versioned one (tool-1.2.3-linux-amd64.tar.gz);
-// any other template is a small [AssetNamer].
+// any other template is a small [AssetNamer]. The checksums file is
+// "checksums.txt" unless the Updater names another; [VersionedChecksums]
+// matches GoReleaser's default, tool_1.2.3_checksums.txt.
 //
 // A binary installed by a package manager (Homebrew, a .deb or .rpm, Nix,
 // Scoop) is that manager's to update; [Updater.Update] refuses to touch it

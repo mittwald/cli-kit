@@ -49,9 +49,25 @@ func TestBlocksMuteAllButHighlights(t *testing.T) {
 	fmt.Fprintln(blocks.Detail(), "step 1: uploading 10 files")
 	fmt.Fprintln(blocks.Detail(), "WARNING: no checksum file")
 
-	muted := theme.Active().Muted
+	muted := theme.Active().Status
 	want := "\n" + muted.Paint("step 1: uploading 10 files") + "\nWARNING: no checksum file\n"
 	if out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// A theme with a Status style paints the detail lines in it.
+func TestBlocksTakeTheThemesStatusStyle(t *testing.T) {
+	t.Cleanup(func() { theme.Use(theme.Default) })
+	custom := theme.Default
+	custom.Status = theme.Fg256(248)
+	theme.Use(custom)
+
+	var out bytes.Buffer
+	blocks := NewBlocks(&out)
+	blocks.color = true
+	fmt.Fprintln(blocks.Detail(), "step 1")
+	if want := "\n" + custom.Status.Paint("step 1") + "\n"; out.String() != want {
 		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 }
