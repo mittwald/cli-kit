@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/mittwald/cli-kit/term"
+	"github.com/mittwald/cli-kit/theme"
 )
 
 // A status line is taken back by moving over it, so the escape names the
@@ -34,6 +37,29 @@ func TestStatusKeepsTheLineOffATerminal(t *testing.T) {
 	done()
 	if got, want := out.String(), "Fetching releases...\n"; got != want {
 		t.Errorf("Status() wrote %q, want %q", got, want)
+	}
+}
+
+// Where color is on, a status line is drawn in the theme's Status style.
+func TestStatusStyle(t *testing.T) {
+	was := term.CurrentColorMode()
+	term.SetColorMode(term.ColorAlways)
+	t.Cleanup(func() { term.SetColorMode(was); theme.Use(theme.Default) })
+
+	var out bytes.Buffer
+	Status(&out, "Fetching releases...\nand tags...")
+	want := theme.Default.Status.PaintLines("Fetching releases...\nand tags...") + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("Status() with the default theme wrote %q, want %q", got, want)
+	}
+
+	custom := theme.Default
+	custom.Status = theme.Fg256(248)
+	theme.Use(custom)
+	out.Reset()
+	Status(&out, "Fetching releases...")
+	if got, want := out.String(), "\x1b[38;5;248mFetching releases...\x1b[0m\n"; got != want {
+		t.Errorf("Status() with a Status style wrote %q, want %q", got, want)
 	}
 }
 

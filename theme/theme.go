@@ -1,9 +1,12 @@
 package theme
 
 import (
+	"io"
 	"strconv"
 	"strings"
 	"sync/atomic"
+
+	"github.com/mittwald/cli-kit/term"
 )
 
 // Style is a set of SGR parameters, such as "1" (bold) or "38;5;141" (a
@@ -54,6 +57,18 @@ func (s Style) PaintLines(text string) string {
 	return strings.Join(lines, "\n")
 }
 
+// For returns s where w takes color, as term.Colored decides, and the zero
+// Style anywhere else, so text painted with the result stays plain in a
+// pipe, a file or a test's buffer:
+//
+//	fmt.Fprintln(os.Stderr, theme.Active().Muted.For(os.Stderr).PaintLines(note))
+func (s Style) For(w io.Writer) Style {
+	if !term.Colored(w) {
+		return ""
+	}
+	return s
+}
+
 // Sequence returns the escape sequence that switches s on, or "" for the
 // zero Style.
 func (s Style) Sequence() string {
@@ -100,8 +115,11 @@ type Theme struct {
 	Header Style
 	// Border is a table's rules and frame.
 	Border Style
-	// Muted recedes text: notes, key hints, detail lines, disabled rows.
+	// Muted recedes text: notes, key hints, disabled rows.
 	Muted Style
+	// Status is text that only says what a command is doing while it does
+	// it: the lines of pick.Status and the detail lines of live.Blocks.
+	Status Style
 	// Qualifier is secondary text beside a value, quieter than the value but
 	// louder than Muted.
 	Qualifier Style
@@ -137,6 +155,7 @@ var Default = Theme{
 	Header:            Join(Bold, Fg256(252)),
 	Border:            Fg256(240),
 	Muted:             Fg256(244),
+	Status:            Fg256(244),
 	Qualifier:         Fg256(250),
 	Value:             Fg256(141),
 	Detail:            Fg256(117),

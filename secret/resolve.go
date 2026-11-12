@@ -80,7 +80,8 @@ type Request struct {
 	// second question of a confirmed entry asks to repeat it.
 	Name string
 	// Hint is optional text to show before the first question, such as
-	// where to create a token and which scopes it needs.
+	// where to create a token and which scopes it needs. The prompts of this
+	// package show the URLs in it as hyperlinks (see term.Linkify).
 	Hint string
 	// Repeat marks the second question of a confirmed entry.
 	Repeat bool
@@ -104,14 +105,8 @@ func (r Request) Prompt() string {
 // error wrapping [ErrNoSource] when there is no terminal to ask on.
 //
 // [TTYPrompt] is the default. A tool with its own input widget, such as
-// pick.Input from this module, wraps it in a PromptFunc:
-//
-//	func(req secret.Request) (string, error) {
-//		if req.Hint != "" && !req.Repeat {
-//			fmt.Fprintln(os.Stderr, req.Hint)
-//		}
-//		return pick.Input(os.Stdin, os.Stderr, pick.InputOptions{Prompt: req.Prompt(), Secret: true})
-//	}
+// pick.Input from this module, turns it into a PromptFunc with
+// [InputPrompt].
 type PromptFunc func(Request) (string, error)
 
 // Resolver finds one secret. See the package documentation for the order
@@ -527,7 +522,7 @@ func TTYPrompt(req Request) (string, error) {
 	out, closeOut := promptOutput(tty)
 	defer closeOut()
 	if req.Hint != "" && !req.Repeat {
-		_, _ = fmt.Fprintln(out, req.Hint)
+		_, _ = fmt.Fprintln(term.Links(out), req.Hint)
 	}
 	_, _ = io.WriteString(out, req.Prompt())
 	value, err := xterm.ReadPassword(int(tty.Fd()))
@@ -538,4 +533,31 @@ func TTYPrompt(req Request) (string, error) {
 		return "", fmt.Errorf("terminal: %w", err)
 	}
 	return string(value), nil
+}
+
+// InputPrompt returns a [PromptFunc] that asks with input, a text field
+// that draws nothing for what is typed, on in and out. With pick.Input from
+// this module:
+//
+//	prompt := secret.InputPrompt(os.Stdin, os.Stderr,
+//		func(in, out *os.File, prompt string) (string, error) {
+//			return pick.Input(in, out, pick.InputOptions{Prompt: prompt, Secret: true})
+//		})
+//
+// Unlike [TTYPrompt] it asks on in and out only. Where either is not a
+// terminal it returns [ErrNoSource] without calling input, so a [Resolver]
+// names the sources the user could offer instead. Before the first question
+// of a request it writes the request's Hint to out, its URLs as hyperlinks.
+// The question passed to input is [Request.Prompt]; input's errors are
+// returned as they are.
+func InputPrompt(in, out *os.File, input func(in, out *os.File, prompt string) (string, error)) PromptFunc {
+	return func(req Request) (string, error) {
+		if !term.Interactive(in, out) {
+			return "", ErrNoSource
+		}
+		if req.Hint != "" && !req.Repeat {
+			_, _ = fmt.Fprintln(term.Links(out), req.Hint)
+		}
+		return input(in, out, req.Prompt())
+	}
 }

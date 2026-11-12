@@ -339,6 +339,28 @@ func TestCompletionCacheKeepAndErrors(t *testing.T) {
 	}
 }
 
+// Without a cache directory, such as without $HOME, every call loads.
+func TestCompletionCacheWithoutCacheDirectory(t *testing.T) {
+	for _, name := range []string{"HOME", "XDG_CACHE_HOME", "LocalAppData"} {
+		t.Setenv(name, "")
+	}
+	if dir, err := os.UserCacheDir(); err == nil {
+		t.Skipf("os.UserCacheDir still answers %q", dir)
+	}
+	cache := CompletionCache[[]string]{App: "example"}
+	calls := 0
+	load := func(context.Context) ([]string, error) { calls++; return []string{"a"}, nil }
+	for range 2 {
+		values, err := cache.Get(context.Background(), "scope", load)
+		if err != nil || len(values) != 1 || values[0] != "a" {
+			t.Fatalf("Get = %v, %v; want the loaded values", values, err)
+		}
+	}
+	if calls != 2 {
+		t.Errorf("load ran %d times, want every call without a cache", calls)
+	}
+}
+
 func TestCachedCompletion(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())

@@ -34,6 +34,39 @@ func ExampleUpdater() {
 	}
 }
 
+// A command that says what it is about to install checks first, then
+// installs the release it found.
+func ExampleUpdater_Install() {
+	u := &selfupdate.Updater{
+		Source:       &selfupdate.GitHub{Owner: "example", Repo: "tool"},
+		Current:      "v1.0.0",
+		Asset:        selfupdate.TitleCaseAssets("tool"),
+		ChecksumsFor: selfupdate.VersionedChecksums("tool"),
+	}
+	ctx := context.Background()
+	rel, newer, err := u.Check(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	if !newer {
+		fmt.Printf("already up to date (%s)\n", u.Current)
+		return
+	}
+	fmt.Printf("updating %s -> %s (%s)...\n", u.Current, rel.Tag, u.AssetName(rel))
+	result, err := u.Install(ctx, rel)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	fmt.Printf("%s is now %s\n", result.Path, rel.Tag)
+}
+
+func ExampleVersionedChecksums() {
+	fmt.Println(selfupdate.VersionedChecksums("tool")(selfupdate.Release{Tag: "v1.2.3"}))
+	// Output: tool_1.2.3_checksums.txt
+}
+
 func ExampleVersionedAssets() {
 	name := selfupdate.VersionedAssets("tool")(selfupdate.Release{Tag: "v1.2.3"},
 		selfupdate.Platform{OS: "linux", Arch: "arm", Arm: "7"})

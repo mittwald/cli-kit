@@ -1,6 +1,11 @@
 package theme
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+
+	"github.com/mittwald/cli-kit/term"
+)
 
 func TestPaint(t *testing.T) {
 	if got := Bold.Paint("x"); got != "\x1b[1mx\x1b[0m" {
@@ -46,5 +51,35 @@ func TestUse(t *testing.T) {
 	Use(Plain)
 	if Active() != Plain {
 		t.Error("Use(Plain) not active")
+	}
+}
+
+// For keeps a style only for a writer that takes color.
+func TestStyleFor(t *testing.T) {
+	was := term.CurrentColorMode()
+	t.Cleanup(func() { term.SetColorMode(was) })
+	var out bytes.Buffer
+
+	term.SetColorMode(term.ColorAuto)
+	if got := Bold.For(&out); got != "" {
+		t.Errorf("For(a buffer) = %q, want the zero Style: a buffer is no terminal", got)
+	}
+	if got := Bold.For(&out).PaintLines("a\nb"); got != "a\nb" {
+		t.Errorf("painted for a buffer = %q, want the text unchanged", got)
+	}
+	term.SetColorMode(term.ColorAlways)
+	if got := Bold.For(&out); got != Bold {
+		t.Errorf("For under --color=always = %q, want %q", got, Bold)
+	}
+	term.SetColorMode(term.ColorNever)
+	if got := Bold.For(&out); got != "" {
+		t.Errorf("For under --color=never = %q, want the zero Style", got)
+	}
+}
+
+// Status lines keep the grey they had before the role of their own.
+func TestDefaultStatusIsMuted(t *testing.T) {
+	if Default.Status == "" || Default.Status != Default.Muted {
+		t.Errorf("Default.Status = %q, want Muted's %q", Default.Status, Default.Muted)
 	}
 }

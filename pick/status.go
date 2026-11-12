@@ -12,15 +12,16 @@ import (
 // Status writes text as a line of its own (or several, where it has newlines)
 // and returns a function that erases it again. Use it for what is only of
 // interest while it lasts, such as "Fetching releases...". On a terminal the
-// text is muted and the returned function takes it back off the screen;
-// anywhere else the line stays, since a log is read after the fact.
+// text is drawn in the theme's Status style and the returned function takes
+// it back off the screen; anywhere else the line stays, since a log is read
+// after the fact.
 //
 // The returned function erases by counting screen rows up from the cursor,
 // so it must be called before anything else is written.
 func Status(w io.Writer, text string) func() {
 	line := text
 	if term.Colored(w) {
-		line = theme.Active().Muted.PaintLines(text)
+		line = theme.Active().Status.PaintLines(text)
 	}
 	_, _ = fmt.Fprintln(w, line)
 	return func() {

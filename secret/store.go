@@ -145,3 +145,64 @@ func (f fallback) Delete(account string) error {
 		return errors.Join(err, secondaryErr)
 	}
 }
+
+// Migrating returns a Store that works like Fallback(primary, secondary) and
+// also moves secrets from secondary into primary. It suits a tool that kept
+// its secrets in files before it used a keyring, and a keyring that was
+// missing when a secret was saved:
+//
+//   - Get reads primary. When primary answers that it holds no secret for
+//     the account, Get reads secondary, stores the value in primary and only
+//     then deletes it from secondary. When primary does not take the value,
+//     the secondary copy stays where it is. Failing to delete the copy is
+//     not an error, since primary is read first from then on.
+//   - When primary fails for another reason, such as a missing keyring,
+//     secondary is the store: Get returns what secondary returns, its
+//     errors alone, and moves nothing.
+//   - Set and Delete are those of Fallback.
+func Migrating(primary, secondary Store) Store {
+	return migrating{fallback{primary: primary, secondary: secondary}}
+}
+
+type migrating struct{ fallback }
+
+func (m migrating) Get(account string) (string, error) {
+	value, err := m.primary.Get(account)
+	switch {
+	case err == nil:
+		return value, nil
+	case !errors.Is(err, ErrNotFound):
+		return m.secondary.Get(account)
+	}
+	value, err = m.secondary.Get(account)
+	if err != nil {
+		return "", err
+	}
+	if m.primary.Set(account, value) == nil {
+		_ = m.secondary.Delete(account)
+	}
+	return value, nil
+}
+
+// ErrUnavailable is what a store from [Unavailable] fails with when it was
+// given no error of its own.
+var ErrUnavailable = errors.New("secret: store unavailable")
+
+// Unavailable returns a Store that is not there: every method fails with
+// err, or with [ErrUnavailable] when err is nil. Use it in place of a store
+// that could not be set up, such as a [FileStore] whose directory could not
+// be located: a [Fallback] in front of it moves on, and err is reported once
+// the store is needed. An err that wraps [ErrNotFound] makes the store look
+// empty rather than missing.
+func Unavailable(err error) Store {
+	if err == nil {
+		err = ErrUnavailable
+	}
+	return unavailable{err: err}
+}
+
+type unavailable struct{ err error }
+
+func (u unavailable) Get(string) (string, error) { return "", u.err }
+func (u unavailable) Set(string, string) error   { return u.err }
+func (u unavailable) Delete(string) error        { return u.err }

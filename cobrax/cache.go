@@ -35,7 +35,8 @@ type CompletionCache[T any] struct {
 	TTL time.Duration
 	// Timeout bounds one load; zero means [DefaultCompletionTimeout].
 	Timeout time.Duration
-	// Dir overrides the base directory, os.UserCacheDir by default.
+	// Dir overrides the base directory, os.UserCacheDir by default. Where
+	// neither is available, values are loaded uncached.
 	Dir string
 	// Keep decides whether a loaded value is worth caching. An empty answer
 	// often means "not signed in yet" rather than "nothing exists", and
@@ -50,15 +51,19 @@ var errNoApp = errors.New("cobrax: CompletionCache.App is empty")
 // Get returns the value cached for scope while it is younger than the TTL,
 // and otherwise calls load, bounded by the timeout, and caches its result.
 // scope identifies what the value answers, such as a repository URL; it is
-// hashed into the file name. Failing to write the cache is not an error.
+// hashed into the file name. Failing to write the cache is not an error, and
+// where there is no cache directory, such as without $HOME, Get calls load
+// every time.
 func (c CompletionCache[T]) Get(ctx context.Context, scope string, load func(context.Context) (T, error)) (T, error) {
 	var zero T
-	path, err := c.path(scope)
-	if err != nil {
-		return zero, err
+	if c.App == "" {
+		return zero, errNoApp
 	}
-	if value, ok := c.read(path); ok {
-		return value, nil
+	path, cached := c.path(scope)
+	if cached {
+		if value, ok := c.read(path); ok {
+			return value, nil
+		}
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -73,25 +78,24 @@ func (c CompletionCache[T]) Get(ctx context.Context, scope string, load func(con
 	if err != nil {
 		return zero, err
 	}
-	if c.Keep == nil || c.Keep(value) {
+	if cached && (c.Keep == nil || c.Keep(value)) {
 		write(path, value)
 	}
 	return value, nil
 }
 
-func (c CompletionCache[T]) path(scope string) (string, error) {
-	if c.App == "" {
-		return "", errNoApp
-	}
+// path returns the file caching scope, and false where there is no cache
+// directory.
+func (c CompletionCache[T]) path(scope string) (string, bool) {
 	dir := c.Dir
 	if dir == "" {
 		var err error
 		if dir, err = os.UserCacheDir(); err != nil {
-			return "", err
+			return "", false
 		}
 	}
 	sum := sha256.Sum256([]byte(scope))
-	return filepath.Join(dir, c.App, "completion", hex.EncodeToString(sum[:8])+".json"), nil
+	return filepath.Join(dir, c.App, "completion", hex.EncodeToString(sum[:8])+".json"), true
 }
 
 func (c CompletionCache[T]) read(path string) (T, bool) {
