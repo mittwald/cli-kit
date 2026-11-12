@@ -144,11 +144,23 @@ type Theme struct {
 	Success Style
 	Warning Style
 	Error   Style
+	// Added and Removed are what a change adds and takes away, such as the
+	// added and removed lines of a diff.
+	Added   Style
+	Removed Style
+	// DiffHeader is the header of a file in a diff: the diff --git, index,
+	// --- and +++ lines.
+	DiffHeader Style
+	// DiffHunk is the @@ -1,4 +1,5 @@ that starts a hunk of a diff.
+	DiffHunk Style
 }
 
 // Default is the theme the packages use unless [Use] installs another. It
 // sticks to the 256-color palette, which every common terminal supports,
-// and to mid-luminance tones that read on dark and light backgrounds.
+// and to mid-luminance tones that read on dark and light backgrounds. A
+// diff reads the way git paints one: file headers bold, hunk headers in
+// light blue, removed lines red and added lines green, in the tones of
+// Error and Success.
 var Default = Theme{
 	Title:             Bold,
 	Subject:           Bold,
@@ -169,11 +181,28 @@ var Default = Theme{
 	Success:           Fg256(114),
 	Warning:           Fg256(221),
 	Error:             Fg256(203),
+	Added:             Fg256(114),
+	Removed:           Fg256(203),
+	DiffHeader:        Bold,
+	DiffHunk:          Fg256(117),
 }
 
 // Plain paints nothing. Installing it keeps escape sequences out of output
 // even where term.Colored would allow them.
 var Plain = Theme{}
+
+// For returns t where w takes color, as term.Colored decides, and [Plain]
+// anywhere else, so whatever is painted with the result stays plain in a
+// pipe, a file or a test's buffer:
+//
+//	th := theme.Active().For(os.Stdout)
+//	fmt.Println(th.Success.Paint("passed"), th.Muted.Paint("in 2s"))
+func (t Theme) For(w io.Writer) Theme {
+	if !term.Colored(w) {
+		return Plain
+	}
+	return t
+}
 
 var active atomic.Pointer[Theme]
 

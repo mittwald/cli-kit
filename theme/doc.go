@@ -6,5 +6,8 @@
 // tool that wants its own palette calls [Use] once at start-up, usually
 // with a copy of [Default] that changes a few roles. Whether anything is
 // painted at all is decided by term.Colored, not by the theme;
-// [Style.For] asks it for a given writer.
+// [Style.For] and [Theme.For] ask it for a given writer.
+//
+// [Theme.PaintDiff] paints a unified diff with the theme's diff roles, and
+// [DiffScanner] tells its lines apart for code that shows only some of them.
 package theme

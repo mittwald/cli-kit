@@ -27,8 +27,8 @@ compiled into your binary.
 
 | Package | What it does |
 |---|---|
-| [`term`](https://pkg.go.dev/github.com/mittwald/cli-kit/term) | Terminal detection and size, the `--color` mode with `NO_COLOR` and `TERM=dumb`, visible text width, truncation, padding, OSC 8 hyperlinks |
-| [`theme`](https://pkg.go.dev/github.com/mittwald/cli-kit/theme) | SGR styles and the color roles the other packages paint with |
+| [`term`](https://pkg.go.dev/github.com/mittwald/cli-kit/term) | Terminal detection and size, the `--color` mode with `NO_COLOR` and `TERM=dumb`, visible text width, truncation, padding, word wrapping, OSC 8 hyperlinks, and untrusted output made safe to show |
+| [`theme`](https://pkg.go.dev/github.com/mittwald/cli-kit/theme) | SGR styles, the color roles the other packages paint with, and unified diffs painted the way git paints them |
 | [`pick`](https://pkg.go.dev/github.com/mittwald/cli-kit/pick) | Interactive list selection with filtering, views and ranges, switches, and line-edited text and secret input |
 | [`live`](https://pkg.go.dev/github.com/mittwald/cli-kit/live) | Blocks of lines redrawn in place, detail/result output separation, and cursor restore on exit, panic and signals |
 | [`progress`](https://pkg.go.dev/github.com/mittwald/cli-kit/progress) | A gradient progress bar with a stall countdown that steps aside for log lines |
@@ -52,6 +52,10 @@ if term.Colored(os.Stdout) {
 }
 width := term.Columns(os.Stdout, 80)
 fmt.Println(term.Truncate(longLine, width))
+
+th := theme.Active().For(os.Stdout) // theme.Plain where stdout takes no color
+fmt.Print(th.PaintDiff(diff))
+fmt.Println(term.Sanitize(jobLog)) // its colors kept, every other escape gone
 ```
 
 ### Tables and structured output

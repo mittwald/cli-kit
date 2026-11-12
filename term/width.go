@@ -12,8 +12,10 @@ const Ellipsis = "…"
 
 // StripANSI removes terminal escape sequences from s: CSI sequences such as
 // colors and cursor movement (ESC [ … final byte), OSC sequences such as
-// hyperlinks (ESC ] … BEL or ESC \), and two-byte escapes. Everything else,
-// multi-byte runes included, is left untouched.
+// hyperlinks (ESC ] … BEL or ESC \), and the short escapes such as ESC 7
+// and ESC ( B. Everything else, multi-byte runes included, is left
+// untouched. It does not make text from elsewhere safe to show: control
+// characters stay. [Sanitize] does that.
 func StripANSI(s string) string {
 	if !strings.Contains(s, "\x1b") {
 		return s
@@ -33,10 +35,14 @@ func StripANSI(s string) string {
 
 // EscapeLen returns the length in bytes of the escape sequence s starts
 // with, or 0 when s does not start with one. It recognizes CSI sequences
-// (ESC [ … final byte), OSC, DCS, APC and PM strings (ended by BEL or
-// ESC \), and two-byte escapes. An unterminated sequence runs to the end of
-// s, so a cut-off sequence is never counted as visible text. Code that walks
-// styled text uses it to copy escape sequences through whole.
+// (ESC [ … final byte), OSC, DCS, SOS, PM and APC strings (ended by BEL or
+// ESC \), and the short escapes: ESC, any intermediate bytes (0x20–0x2F),
+// and a final byte (0x30–0x7E), such as ESC 7 or ESC ( B. An ESC followed by
+// anything else, such as a control character or the first byte of a
+// multi-byte rune, is a sequence of one byte, so the rune stays whole. An
+// unterminated sequence runs to the end of s, so a cut-off sequence is never
+// counted as visible text. Code that walks styled text uses it to copy escape
+// sequences through whole.
 func EscapeLen(s string) int {
 	if len(s) == 0 || s[0] != 0x1b {
 		return 0
@@ -52,7 +58,7 @@ func EscapeLen(s string) int {
 			}
 		}
 		return len(s)
-	case ']', 'P', '_', '^': // OSC, DCS, APC, PM: ended by BEL or ST.
+	case ']', 'P', 'X', '^', '_': // OSC, DCS, SOS, PM, APC: ended by BEL or ST.
 		for i := 2; i < len(s); i++ {
 			if s[i] == 0x07 {
 				return i + 1
@@ -62,9 +68,19 @@ func EscapeLen(s string) int {
 			}
 		}
 		return len(s)
-	default: // Two-byte escape, such as ESC 7 or ESC M.
-		return 2
 	}
+	// A short escape: intermediate bytes, then one final byte.
+	i := 1
+	for i < len(s) && s[i] >= 0x20 && s[i] <= 0x2f {
+		i++
+	}
+	switch {
+	case i == len(s):
+		return len(s)
+	case s[i] >= 0x30 && s[i] <= 0x7e:
+		return i + 1
+	}
+	return i
 }
 
 // VisibleWidth returns how many terminal cells s takes up once drawn, escape

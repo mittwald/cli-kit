@@ -8,4 +8,9 @@
 // with the environment (NO_COLOR, TERM=dumb) and the stream itself. Every
 // package in this module asks [Colored] before it writes an escape sequence,
 // so output headed for a pipe, a file or a test buffer stays plain.
+//
+// Text from elsewhere — a CI job's log, a remote command's output — goes
+// through [Sanitize] or [SanitizeLines] before it is written: they keep its
+// colors and take out every escape sequence and control character that could
+// do more than color it.
 package term

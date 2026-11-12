@@ -16,6 +16,8 @@ func TestStripANSI(t *testing.T) {
 		"multi-byte runes":   {"\x1b[32mgrün ✓\x1b[0m", "grün ✓"},
 		"unterminated csi":   {"abc\x1b[31", "abc"},
 		"lone escape at end": {"abc\x1b", "abc"},
+		"character set":      {"\x1b(B\x1b[mtext", "text"},
+		"escape before rune": {"\x1bé", "é"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -146,7 +148,14 @@ func TestTruncateClosesHyperlink(t *testing.T) {
 }
 
 func TestEscapeLen(t *testing.T) {
-	tests := map[string]int{"plain": 0, "\x1b[31mx": 5, "\x1b]8;;u\x07x": 7, "\x1b7x": 2, "\x1b[": 2}
+	tests := map[string]int{
+		"plain": 0, "\x1b[31mx": 5, "\x1b]8;;u\x07x": 7, "\x1b7x": 2, "\x1b[": 2,
+		"\x1b(Bx":        3, // a character set: ESC, an intermediate, a final byte
+		"\x1b(":          2, // cut off after the intermediate
+		"\x1bé":          1, // ESC alone, the rune after it whole
+		"\x1b\x1b[31m":   1, // the second ESC starts a sequence of its own
+		"\x1bXsos\x1b\\": 7,
+	}
 	for in, want := range tests {
 		if got := EscapeLen(in); got != want {
 			t.Errorf("EscapeLen(%q) = %d, want %d", in, got, want)
