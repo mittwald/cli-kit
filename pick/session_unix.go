@@ -13,7 +13,8 @@ import (
 
 // wakeable says a blocked read can be woken here: awaitInput waits on the
 // terminal and on a pipe at once. It is what lets a view load its rows, and
-// a signal end the prompt, while the prompt waits for a key.
+// a signal end the prompt, while the prompt waits for a key. An input whose
+// descriptors awaitInput cannot wait on does without, see newFileInput.
 const wakeable = true
 
 // endingSignals are the signals that end a process by default. One arriving

@@ -11,6 +11,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// maxAwaitFd is the highest descriptor awaitInput can wait on: poll(2)
+// takes any descriptor, as a 32-bit number. It is a variable so that a test
+// can lower it to what select(2) is limited to on macOS.
+var maxAwaitFd = math.MaxInt32
+
 // awaitInput waits until f has something to read, until the descriptor wake
 // has, or until timeout has passed, whichever comes first; a negative
 // timeout waits without end and a wake of -1 is not waited on. It reports
@@ -22,6 +27,10 @@ import (
 // not supported on it.
 func awaitInput(f *os.File, wake int, timeout time.Duration) (ready, woken bool) {
 	fd := f.Fd()
+	if !awaitable(fd) || wake > maxAwaitFd {
+		return false, false
+	}
+	// maxAwaitFd is never more than this; stated for the conversions below.
 	if fd > math.MaxInt32 || wake > math.MaxInt32 {
 		return false, false
 	}

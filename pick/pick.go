@@ -124,9 +124,12 @@ type View struct {
 	// after the function that drew the list has returned, and what it returns
 	// is then dropped; a Load that should stop early watches something the
 	// caller cancels. It must not write to the terminal. A panic in Load is
-	// raised again on the goroutine that drew the list. On Windows, where
-	// waiting for a key cannot be interrupted, Load runs before the next key
-	// is read and the list cannot be left until it returns.
+	// raised again on the goroutine that drew the list. Where waiting for a
+	// key cannot be interrupted, Load runs before the next key is read and
+	// the list cannot be left until it returns: on Windows, and on macOS in
+	// a process with so many files open that the terminal, or the pipe the
+	// wait is interrupted through, has a descriptor past what select(2)
+	// takes (FD_SETSIZE, 1024).
 	Load func() ([]Item, error)
 	// Loading is the line shown while Load runs; "" uses a default.
 	Loading string

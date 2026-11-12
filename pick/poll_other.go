@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// maxAwaitFd says no descriptor can be waited on here.
+var maxAwaitFd = -1
+
 // awaitInput has no portable way to wait on a console here, so it reports no
 // input. A pending ESC then resolves as the Esc key at once: a split
 // arrow-key sequence can be read as Esc, which terminals on these platforms

@@ -339,10 +339,14 @@ func (e *editor) layout(n int) ([]styledText, int) {
 func (e *editor) window(room int) (string, int) {
 	bounds := clusterBounds(e.value)
 	count := len(bounds) - 1
-	widths := make([]int, count)
+	// cells[i] is how many cells the clusters in front of cluster i take,
+	// so that the width of any stretch is one subtraction: a value far
+	// longer than the line is scrolled over cluster by cluster, and adding
+	// up a stretch at every step took seconds for a long one.
+	cells := make([]int, count+1)
 	caret, first := count, 0
 	for i := range count {
-		widths[i] = width(string(e.value[bounds[i]:bounds[i+1]]))
+		cells[i+1] = cells[i] + width(string(e.value[bounds[i]:bounds[i+1]]))
 		if bounds[i] == e.caret {
 			caret = i
 		}
@@ -350,13 +354,7 @@ func (e *editor) window(room int) (string, int) {
 			first = i
 		}
 	}
-	span := func(from, to int) int {
-		cells := 0
-		for _, w := range widths[from:to] {
-			cells += w
-		}
-		return cells
-	}
+	span := func(from, to int) int { return cells[to] - cells[from] }
 	if span(0, count) <= room {
 		e.first = 0
 		return string(e.value), span(0, caret)
@@ -380,9 +378,8 @@ func (e *editor) window(room int) (string, int) {
 		first--
 	}
 	e.first = bounds[first]
-	cells, end := lead(first), first
-	for end < count && cells+widths[end] <= room {
-		cells += widths[end]
+	end := first
+	for end < count && lead(first)+span(first, end+1) <= room {
 		end++
 	}
 	shown := string(e.value[bounds[first]:bounds[end]])

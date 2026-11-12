@@ -316,15 +316,31 @@ type fileInput struct {
 
 func newFileInput(file *os.File) *fileInput {
 	i := &fileInput{file: file, ahead: takeTypeahead(file), wakeFd: -1}
-	if !wakeable {
+	if !wakeable || !awaitable(file.Fd()) {
 		return i
 	}
 	// Without a pipe the prompt still works; it just cannot be woken.
-	if r, w, err := os.Pipe(); err == nil {
-		i.wakeRead, i.wakeWrite = r, w
-		i.wakeFd = int(r.Fd())
+	r, w, err := os.Pipe()
+	if err != nil {
+		return i
 	}
+	if !awaitable(r.Fd()) {
+		// The pipe got a descriptor that cannot be waited on, as select(2)
+		// on macOS has it for one past FD_SETSIZE. A read that claimed it
+		// could be woken would block on the terminal all the same, and rows
+		// loaded meanwhile, or a signal, would wait for the next key.
+		_ = r.Close()
+		_ = w.Close()
+		return i
+	}
+	i.wakeRead, i.wakeWrite = r, w
+	i.wakeFd = int(r.Fd())
 	return i
+}
+
+// awaitable reports whether awaitInput can wait on the descriptor fd.
+func awaitable(fd uintptr) bool {
+	return maxAwaitFd >= 0 && fd <= uintptr(maxAwaitFd)
 }
 
 func (i *fileInput) read() ([]byte, error) {

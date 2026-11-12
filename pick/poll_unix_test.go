@@ -94,6 +94,83 @@ func TestFileInputReadCanBeWoken(t *testing.T) {
 	}
 }
 
+// select(2) on macOS waits on no descriptor past FD_SETSIZE. Where the
+// pipe a read is woken through gets such a descriptor, or the terminal has
+// one, the input must not claim that a read can be woken: rows a view
+// loaded on the side, and a signal, would wait for the next key. It reads
+// without waiting instead, as on a platform without a way to wait, and a
+// view then loads its rows between two draws.
+func TestFileInputCannotBeWokenThroughADescriptorOutOfReach(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	// Take every descriptor below the terminal's, so that the pipe opened
+	// for waking gets one above it.
+	for {
+		filler, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer filler.Close()
+		if filler.Fd() > r.Fd() {
+			break
+		}
+	}
+	previous := maxAwaitFd
+	t.Cleanup(func() { maxAwaitFd = previous })
+
+	// The terminal is within reach, the pipe is not.
+	maxAwaitFd = int(r.Fd())
+	in := newFileInput(r)
+	defer in.close()
+	if in.wakes() || in.wakeRead != nil || in.wakeWrite != nil || in.wakeFd != -1 {
+		t.Fatalf("input claims a read can be woken: wakes() = %v, descriptor %d", in.wakes(), in.wakeFd)
+	}
+	in.wake() // nothing to wake, and nothing to trip over
+	if _, err := w.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if keys, err := in.read(); err != nil || string(keys) != "x" {
+		t.Fatalf("read() = %q, %v; want the key typed", keys, err)
+	}
+	// Escape sequences are still joined: the terminal can be waited on.
+	if _, err := w.Write([]byte("[A")); err != nil {
+		t.Fatal(err)
+	}
+	if got := in.grace(); string(got) != "[A" {
+		t.Errorf("grace() = %q, want the rest of the sequence", got)
+	}
+	in.interrupt()
+	if _, err := in.read(); !errors.Is(err, ErrInterrupted) {
+		t.Errorf("read() after an interrupt = %v, want ErrInterrupted", err)
+	}
+
+	// The terminal itself is out of reach: nothing can be waited on.
+	maxAwaitFd = int(r.Fd()) - 1
+	in = newFileInput(r)
+	defer in.close()
+	if in.wakes() {
+		t.Fatal("input claims a read can be woken on a terminal that cannot be waited on")
+	}
+	if ready, woken := awaitInput(r, -1, time.Millisecond); ready || woken {
+		t.Errorf("awaitInput on a descriptor out of reach = %v, %v", ready, woken)
+	}
+	if got := in.grace(); len(got) != 0 {
+		t.Errorf("grace() = %q on a terminal that cannot be waited on", got)
+	}
+
+	// Within reach again, a read can be woken as before.
+	maxAwaitFd = previous
+	in = newFileInput(r)
+	defer in.close()
+	if !in.wakes() {
+		t.Fatal("wakes() = false with every descriptor within reach")
+	}
+}
+
 // A terminal that went away fails its reads with EIO rather than ending
 // them: nobody is left to answer, which is an interrupt and not a failure.
 func TestDriveTakesAHangUpForAnInterrupt(t *testing.T) {

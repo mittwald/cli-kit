@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mittwald/cli-kit/term"
 )
 
 func TestEditorEditsTheValue(t *testing.T) {
@@ -401,5 +403,40 @@ func TestEditorTakesALongPaste(t *testing.T) {
 	// the whole value.
 	if elapsed := time.Since(start); elapsed > 15*time.Second {
 		t.Errorf("pasting %d runes and editing %d took %v", runes, edits, elapsed)
+	}
+}
+
+// A value far longer than the line is laid out in a time that grows with
+// its length. Scrolling to the caret summed the width of what was left at
+// every cluster it passed, which took seconds for a long value and froze
+// the prompt on its first draw.
+func TestEditorLaysOutALongValue(t *testing.T) {
+	const runes = 400000
+	e := newEditor(InputOptions{Prompt: "Token: ", Value: strings.Repeat("x", runes)}, false)
+	start := time.Now()
+
+	// The caret is at the end: the line shows the end of the value.
+	parts, column := e.layout(80)
+	if shown := parts[len(parts)-1].text; shown != term.Ellipsis+strings.Repeat("x", 71) {
+		t.Errorf("value scrolled to its end is drawn as %q", shown)
+	}
+	if column != 80 {
+		t.Errorf("cursor column = %d, want 80", column)
+	}
+	// And back at the start, its beginning.
+	e.apply(key{kind: keyHome})
+	parts, column = e.layout(80)
+	if shown := parts[len(parts)-1].text; shown != strings.Repeat("x", 72)+term.Ellipsis {
+		t.Errorf("value scrolled to its start is drawn as %q", shown)
+	}
+	if column != 8 {
+		t.Errorf("cursor column = %d, want 8", column)
+	}
+	e.apply(key{kind: keyEnd})
+	e.layout(80)
+
+	// The first layout alone took most of a minute.
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Errorf("laying out %d runes three times took %v", runes, elapsed)
 	}
 }
