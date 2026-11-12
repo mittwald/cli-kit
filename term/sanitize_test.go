@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSanitize(t *testing.T) {
@@ -177,5 +178,34 @@ func FuzzSanitize(f *testing.F) {
 func TestSanitizeTabAfterJoinedEmoji(t *testing.T) {
 	if got, want := Sanitize("👩‍💻\tx"), "👩‍💻      x"; got != want {
 		t.Fatalf("Sanitize = %q, want %q", got, want)
+	}
+}
+
+// An escape string runs to its terminator across newlines, as a terminal
+// reads it: none of a clipboard write's payload may show.
+func TestSanitizeDropsEscapeStringsAcrossLines(t *testing.T) {
+	in := "before\x1b]52;c;secret\npayload\x1b\\after"
+	if got, want := Sanitize(in), "beforeafter"; got != want {
+		t.Fatalf("Sanitize = %q, want %q", got, want)
+	}
+	if got := SanitizeLines(in); len(got) != 1 || got[0] != "beforeafter" {
+		t.Fatalf("SanitizeLines = %q, want [beforeafter]", got)
+	}
+	// Without a terminator the string runs to the end.
+	if got, want := Sanitize("a\x1bPq\nrest"), "a"; got != want {
+		t.Fatalf("Sanitize = %q, want %q", got, want)
+	}
+}
+
+// Tabs are expanded in time linear in the line's length.
+func TestSanitizeManyTabsIsLinear(t *testing.T) {
+	line := strings.Repeat("x\t", 200000)
+	start := time.Now()
+	out := Sanitize(line)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Sanitize of %d tabs took %v", 200000, elapsed)
+	}
+	if want := strings.Repeat("x       ", 200000); out != want {
+		t.Fatal("tab stops wrong on a long line")
 	}
 }
