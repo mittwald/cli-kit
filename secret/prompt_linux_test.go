@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/mittwald/cli-kit/term"
 )
 
 // openPTY returns both ends of a new pseudo terminal.
@@ -63,6 +65,15 @@ func readAvailable(t *testing.T, master *os.File) string {
 // On a terminal the hint comes first, with its URL a hyperlink, and the
 // field is asked the request's question; a repeated question has no hint.
 func TestInputPromptOnATerminal(t *testing.T) {
+	// Hyperlinks depend on the environment: NO_COLOR, TERM=dumb and the
+	// process-wide color mode turn them off.
+	t.Setenv("NO_COLOR", "")
+	_ = os.Unsetenv("NO_COLOR")
+	t.Setenv("TERM", "xterm-256color")
+	previous := term.CurrentColorMode()
+	term.SetColorMode(term.ColorAuto)
+	t.Cleanup(func() { term.SetColorMode(previous) })
+
 	master, tty := openPTY(t)
 	var asked []string
 	prompt := InputPrompt(tty, tty, func(in, out *os.File, question string) (string, error) {
