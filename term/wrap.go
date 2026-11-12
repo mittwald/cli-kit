@@ -37,9 +37,14 @@ func wrapLine(line string, width int, indent string) string {
 	var b strings.Builder
 	b.WriteString(lead)
 	column := VisibleWidth(lead)
+	// pending are spaces before an escape sequence standing alone, such as a
+	// trailing reset: they belong before the next visible word.
+	pending := 0
 	for first := true; ; first = false {
 		spaces := len(rest) - len(strings.TrimLeft(rest, " "))
 		rest = rest[spaces:]
+		spaces += pending
+		pending = 0
 		if rest == "" {
 			// Spaces at the end of a line that is broken anyway go.
 			return b.String()
@@ -48,6 +53,12 @@ func wrapLine(line string, width int, indent string) string {
 		rest = rest[len(word):]
 		wordWidth := VisibleWidth(word)
 		switch {
+		case wordWidth == 0 && !first:
+			// Nothing to see: it stays on the line it follows and cannot break
+			// it.
+			b.WriteString(word)
+			pending = spaces
+			continue
 		case first:
 		case column+spaces+wordWidth > width:
 			b.WriteString("\n" + indent)

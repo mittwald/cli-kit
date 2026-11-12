@@ -33,3 +33,15 @@ func TestWrap(t *testing.T) {
 		})
 	}
 }
+
+// An escape sequence standing alone, such as a trailing reset, stays on the
+// line it follows instead of breaking it.
+func TestWrapKeepsEscapeOnlyTokensOnTheLine(t *testing.T) {
+	if got, want := Wrap("\x1b[31maaaa bbbb \x1b[0m", 4, ""), "\x1b[31maaaa\nbbbb\x1b[0m"; got != want {
+		t.Fatalf("Wrap = %q, want %q", got, want)
+	}
+	// The spaces before it still separate the next visible word.
+	if got, want := Wrap("aaaa \x1b[1m bbbb cccc", 11, ""), "aaaa\x1b[1m  bbbb\ncccc"; got != want {
+		t.Fatalf("Wrap = %q, want %q", got, want)
+	}
+}
