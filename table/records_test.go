@@ -86,3 +86,35 @@ func TestRecordLineJoin(t *testing.T) {
 		t.Fatalf("line join mismatch: %q", got)
 	}
 }
+
+// untrustedRow carries what a cell from elsewhere may hold: a clipboard write
+// in both its forms, an 8-bit CSI, a bell, backspaces over text, a carriage
+// return, a tab, a NUL and bytes that are not UTF-8.
+var untrustedRow = []string{
+	"Ada\x1b]52;c;Zm9v\x07\u009d52;c;Zm9v\u009c Lovelace",
+	"\u009b2Jok\x07\x08\x08",
+	"pay the attacker\rpay your bank",
+	"a\tb\x00c\xff",
+}
+
+// A record carries no control character but the separators and line ends of
+// its format, whatever its cells held.
+func TestRecordsCarryNoControlCharacters(t *testing.T) {
+	for _, tc := range []struct {
+		delimiter rune
+		want      string
+	}{
+		{',', "Name,Note\nAda Lovelace,ok,pay the attacker; pay your bank,a bc\ufffd\n"},
+		{'\t', "Name\tNote\nAda Lovelace\tok\tpay the attacker; pay your bank\ta bc\ufffd\n"},
+	} {
+		got := renderRecords(t, tc.delimiter, []string{"Name\u0085", "No\x1b[31mte"}, untrustedRow)
+		if got != tc.want {
+			t.Errorf("records with %q mismatch\nwant:\n%q\ngot:\n%q", tc.delimiter, tc.want, got)
+		}
+		for _, r := range got {
+			if r != '\n' && r != tc.delimiter && (r < 0x20 || (r >= 0x7f && r <= 0x9f)) {
+				t.Errorf("record carries %U: %q", r, got)
+			}
+		}
+	}
+}

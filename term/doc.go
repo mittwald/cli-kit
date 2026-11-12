@@ -12,5 +12,7 @@
 // Text from elsewhere — a CI job's log, a remote command's output — goes
 // through [Sanitize] or [SanitizeLines] before it is written: they keep its
 // colors and take out every escape sequence and control character that could
-// do more than color it.
+// do more than color it. Text that is shown plain, without the sender's
+// colors, goes through [Plain] instead, and a value shown within one line,
+// such as a name or a header, through [PlainLine].
 package term

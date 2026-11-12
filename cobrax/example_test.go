@@ -7,6 +7,7 @@ import (
 
 	"github.com/mittwald/cli-kit/buildinfo"
 	"github.com/mittwald/cli-kit/cobrax"
+	"github.com/mittwald/cli-kit/term"
 )
 
 func ExampleAddEnumFlag() {
@@ -42,4 +43,23 @@ func ExampleSetVersion() {
 	_ = root.Execute()
 	// Output:
 	// example 1.4.0
+}
+
+// A --color flag read the way grep reads it: a bare --color means auto, and
+// only auto, always and never are accepted.
+func ExampleAddColorFlagWith() {
+	defer term.SetColorMode(term.CurrentColorMode())
+	root := &cobra.Command{Use: "example", SilenceErrors: true, SilenceUsage: true, Run: func(*cobra.Command, []string) {}}
+	color := cobrax.AddColorFlagWith(root, "when to use color: auto, always or never",
+		cobrax.BareColor(term.ColorAuto), cobrax.StrictColor())
+
+	root.SetArgs([]string{"--color"})
+	_ = root.Execute()
+	fmt.Println(color.Mode())
+
+	root.SetArgs([]string{"--color=yes"})
+	fmt.Println(root.Execute())
+	// Output:
+	// auto
+	// invalid argument "yes" for "--color" flag: invalid color mode "yes": want one of auto, always, never
 }

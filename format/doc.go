@@ -11,7 +11,9 @@
 // [WriteJSON] and [WriteYAML] write the same view of a value. YAML is produced
 // from the JSON encoding, so json struct tags are the single source of truth
 // for both formats: field names, omitted fields, custom MarshalJSON methods
-// and field order are the same in either output.
+// and field order are the same in either output. Neither writes a control
+// character raw: one in a string is escaped, so the output is as safe to
+// print on a terminal as it is to parse.
 //
 // Escape sequences belong in text output only. Markdown, CSV and TSV are
 // pasted or parsed verbatim, and JSON and YAML are read by programs, so

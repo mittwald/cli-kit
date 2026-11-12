@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestSanitize(t *testing.T) {
@@ -31,7 +32,14 @@ func TestSanitize(t *testing.T) {
 		"double escape":         {"\x1b\x1b[31mx", "\x1b[31mx"},
 		"lone escape at end":    {"abc\x1b", "abc"},
 		"control characters":    {"a\x00b\x07c\x08d\x7fe\x0ef", "abcdef"},
-		"c1 controls":           {"a\u009b31mb\u0085c", "a31mbc"},
+		"c1 controls":           {"a\u0085b\u0084c\u009cd", "abcd"},
+		"8-bit csi":             {"a\u009b2Jb\u009b31mc\u009b1 qd", "abcd"},
+		"8-bit csi malformed":   {"a\u009b\u00e9b\u009b31\u0085m", "aéb31m"},
+		"8-bit osc to bel":      {"a\u009d52;c;Zm9v\x07b", "ab"},
+		"8-bit osc to st":       {"a\u009d0;title\u009cb", "ab"},
+		"8-bit osc to esc st":   {"a\u009d8;;https://evil.example\x1b\\b", "ab"},
+		"8-bit strings":         {"\u0090q\u009c\u0098x\x07\u009ey\u009c\u009fz\u009cend", "end"},
+		"8-bit unterminated":    {"Ko\u009eenka\nnext\x07", "Koenka\nnext"},
 		"invalid utf-8":         {"a\xffb", "a�b"},
 		"tabs to stops":         {"a\tb\tc\n\tx\n12345678\ty", "a       b       c\n        x\n12345678        y"},
 		"tab after wide runes":  {"日本\tx", "日本    x"},
@@ -149,7 +157,10 @@ func TestSanitizeLongLine(t *testing.T) {
 }
 
 func FuzzSanitize(f *testing.F) {
-	for _, seed := range []string{"\x1b[1;31mred\x1b[0m", "a\rb\tc\n", "\x1b]0;t\x07", "\x1b[38;2;1;2", "\xff\x1b"} {
+	for _, seed := range []string{
+		"\x1b[1;31mred\x1b[0m", "a\rb\tc\n", "\x1b]0;t\x07", "\x1b[38;2;1;2", "\xff\x1b",
+		"\u009b31m\u009d52;c;Zm9v\u009c", "\u0090q\x1b\\\u009ex",
+	} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, in string) {
@@ -162,10 +173,26 @@ func FuzzSanitize(f *testing.F) {
 				i += n
 				continue
 			}
-			if out[i] < 0x20 && out[i] != '\n' {
-				t.Fatalf("Sanitize(%q) kept control %#x", in, out[i])
+			r, size := utf8.DecodeRuneInString(out[i:])
+			if r == utf8.RuneError && size == 1 {
+				t.Fatalf("Sanitize(%q) kept invalid UTF-8 at %d", in, i)
 			}
-			i++
+			if control(r) && r != '\n' {
+				t.Fatalf("Sanitize(%q) kept control %U", in, r)
+			}
+			i += size
+		}
+		plain := Plain(in)
+		if plain != StripANSI(out) || strings.Contains(plain, "\x1b") {
+			t.Fatalf("Plain(%q) = %q, not Sanitize without its colors", in, plain)
+		}
+		line := PlainLine(in)
+		if strings.ContainsFunc(line, func(r rune) bool { return control(r) || lineBreak(r) || bidiControl(r) }) ||
+			line != strings.TrimSpace(line) || strings.Contains(line, "  ") {
+			t.Fatalf("PlainLine(%q) = %q", in, line)
+		}
+		if again := PlainLine(line); again != line {
+			t.Fatalf("PlainLine is not idempotent: %q, then %q", line, again)
 		}
 		if again := Sanitize(out); again != out {
 			t.Fatalf("Sanitize is not idempotent: %q, then %q", out, again)
@@ -207,5 +234,76 @@ func TestSanitizeManyTabsIsLinear(t *testing.T) {
 	}
 	if want := strings.Repeat("x       ", 200000); out != want {
 		t.Fatal("tab stops wrong on a long line")
+	}
+}
+
+// The payload of an 8-bit escape string goes with it on its own line, and a
+// line of SanitizeLines carries none of it either.
+func TestSanitizeLinesDrops8BitStrings(t *testing.T) {
+	got := SanitizeLines("\x1b[31mred\u009d52;c;Zm9v\x07\nnext")
+	want := []string{"\x1b[31mred\x1b[0m", "\x1b[31mnext\x1b[0m"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("SanitizeLines = %q, want %q", got, want)
+	}
+}
+
+func TestPlain(t *testing.T) {
+	tests := map[string]struct{ in, want string }{
+		"plain text":   {"hello, wörld\nnext", "hello, wörld\nnext"},
+		"colors gone":  {"\x1b[1;31mred\x1b[0m and \x1b[38;5;196mmore", "red and more"},
+		"clipboard":    {"a\x1b]52;c;Zm9v\x07b\u009d52;c;Zm9v\u009cc", "abc"},
+		"controls":     {"a\x00b\x07c\x08d\x7fe\u0085f", "abcdef"},
+		"return":       {"pay the attacker\rpay your bank", "pay your bank"},
+		"tab stops":    {"a\tb", "a       b"},
+		"invalid utf8": {"a\xff\xfeb", "a\ufffdb"},
+		"bidi kept":    {"\u202eabc\u202c", "\u202eabc\u202c"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := Plain(tt.in); got != tt.want {
+				t.Errorf("Plain(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPlainLine(t *testing.T) {
+	tests := map[string]struct{ in, want string }{
+		"plain text":       {"Ada Lovelace", "Ada Lovelace"},
+		"line breaks":      {"Re: one\r\n two\nthree\rfour\vfive\fsix", "Re: one two three four five six"},
+		"unicode breaks":   {"a\u0085b\u2028c\u2029d", "a b c d"},
+		"tabs":             {"a\tb\t\tc", "a b c"},
+		"return keeps all": {"pay the attacker\rpay your bank", "pay the attacker pay your bank"},
+		"white space runs": {"  a   b\u00a0\u00a0c  ", "a b c"},
+		"bidi overrides":   {"invoice\u202efdp.exe", "invoicefdp.exe"},
+		"bidi isolates":    {"a\u2066b\u2067c\u2068d\u2069e\u202af\u202bg\u202ch\u202di", "abcdefghi"},
+		"marks kept":       {"a\u200fb\u200dc", "a\u200fb\u200dc"},
+		"colors gone":      {"\x1b[31mred\x1b[0m", "red"},
+		"string across":    {"a\x1b]52;c;Zm9v\nrest\x07b", "ab"},
+		"8-bit across":     {"a\u009d52;c;Zm9v\nrest\x07b", "ab"},
+		"only escapes":     {"\x1b[2J \x1b]0;t\x07\r\n\t", ""},
+		"invalid utf8":     {"a\xff\xfeb", "a\ufffdb"},
+		"empty":            {"", ""},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := PlainLine(tt.in); got != tt.want {
+				t.Errorf("PlainLine(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// A line of 8-bit escape strings without a terminator is handled in time
+// linear in its length, and each loses its introducer alone.
+func TestSanitizeUnterminated8BitStringsIsLinear(t *testing.T) {
+	line := strings.Repeat("\u009dx", 200000)
+	start := time.Now()
+	out := Sanitize(line)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Sanitize of %d unterminated strings took %v", 200000, elapsed)
+	}
+	if want := strings.Repeat("x", 200000); out != want {
+		t.Fatal("unterminated strings lost more than their introducers")
 	}
 }

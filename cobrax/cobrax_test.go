@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,6 +112,60 @@ func TestColorFlag(t *testing.T) {
 	want := term.ColorModeNames
 	if !slices.Equal(candidates, want) || directive != noFileDirective {
 		t.Errorf("--color completion = %q %s", candidates, directive)
+	}
+}
+
+// The options change what a bare flag means, which values are accepted and
+// how a rejected one is worded, and nothing else.
+func TestColorFlagWith(t *testing.T) {
+	keepColorMode(t)
+	grep := []ColorOption{ColorAliases("colour"), BareColor(term.ColorAuto), StrictColor(), //nolint:misspell // British alias.
+		ColorError(func(value string) error { return fmt.Errorf("Invalid --color %q (want auto, always, or never)", value) })}
+	for _, tc := range []struct {
+		opts []ColorOption
+		args []string
+		want term.ColorMode
+		err  string
+	}{
+		{nil, []string{"--color", "show"}, term.ColorAlways, ""},
+		{nil, []string{"--color=yes", "show"}, term.ColorAlways, ""},
+		{nil, []string{"--color=tty", "show"}, term.ColorAuto, ""},
+		{grep, []string{"show"}, term.ColorAuto, ""},
+		{grep, []string{"--color", "show"}, term.ColorAuto, ""},
+		{grep, []string{"--colour", "show"}, term.ColorAuto, ""}, //nolint:misspell // British alias.
+		{grep, []string{"--color=", "show"}, term.ColorAuto, ""},
+		{grep, []string{"--color=TRUE", "show"}, term.ColorAuto, ""},
+		{grep, []string{"--color=Always", "show"}, term.ColorAlways, ""},
+		{grep, []string{"--color=never", "show"}, term.ColorNever, ""},
+		{grep, []string{"--color=yes", "show"}, term.ColorAuto,
+			`invalid argument "yes" for "--color" flag: Invalid --color "yes" (want auto, always, or never)`},
+		{grep, []string{"--color=false", "show"}, term.ColorAuto,
+			`invalid argument "false" for "--color" flag: Invalid --color "false" (want auto, always, or never)`},
+		{[]ColorOption{StrictColor()}, []string{"--color=none", "show"}, term.ColorAuto,
+			`invalid argument "none" for "--color" flag: invalid color mode "none": want one of auto, always, never`},
+		{[]ColorOption{BareColor(term.ColorNever)}, []string{"--color=true", "show"}, term.ColorNever, ""},
+	} {
+		term.SetColorMode(term.ColorAuto)
+		root := newRoot()
+		value := AddColorFlagWith(root, "when to use color", tc.opts...)
+		_, err := execute(t, root, tc.args...)
+		switch {
+		case tc.err == "" && err != nil:
+			t.Errorf("%q: %v", tc.args, err)
+		case tc.err != "" && (err == nil || err.Error() != tc.err):
+			t.Errorf("%q: error = %v, want %s", tc.args, err, tc.err)
+		case value.Mode() != tc.want || term.CurrentColorMode() != tc.want:
+			t.Errorf("%q: mode = %v, term = %v, want %v", tc.args, value.Mode(), term.CurrentColorMode(), tc.want)
+		}
+	}
+
+	// The flag's bare value follows the option, for help and completion.
+	root := newRoot()
+	AddColorFlagWith(root, "when to use color", grep...)
+	for _, name := range []string{"color", "colour"} { //nolint:misspell // British alias.
+		if got := root.PersistentFlags().Lookup(name).NoOptDefVal; got != "auto" {
+			t.Errorf("--%s bare value = %q, want auto", name, got)
+		}
 	}
 }
 

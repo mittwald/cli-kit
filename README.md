@@ -56,6 +56,7 @@ fmt.Println(term.Truncate(longLine, width))
 th := theme.Active().For(os.Stdout) // theme.Plain where stdout takes no color
 fmt.Print(th.PaintDiff(diff))
 fmt.Println(term.Sanitize(jobLog)) // its colors kept, every other escape gone
+fmt.Println(term.PlainLine(name))  // one line, no escape sequence, no color
 ```
 
 ### Tables and structured output
