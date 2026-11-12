@@ -572,10 +572,18 @@ func TestDisabledBarWritesNothing(t *testing.T) {
 	}
 }
 
-func TestSanitizeLabel(t *testing.T) {
-	label := "\x1b[31mred\x1b[0m\r\nsafe\tlabel\x1b]0;owned\a\u0085"
-	if got, want := sanitizeLabel(label), "redsafe label"; got != want {
-		t.Fatalf("sanitizeLabel() = %q, want %q", got, want)
+// A label from untrusted input stays on the bar's line and shows as plain
+// text: no escape sequence, 7-bit or 8-bit, no control character, no line
+// break and no reordering survive.
+func TestLabelIsPlainLine(t *testing.T) {
+	var buf bytes.Buffer
+	b := testBar(&buf, 40, 2)
+	b.SetLabel("\x1b[31mred\x1b[0m\r\nsafe\tlabel\x1b]0;owned\a\u0085\x1bXsos\x1b\\\x1b(B\u009d52;c;Zm9v\u009c\u202eexe.txt\xff")
+	b.mu.Lock()
+	label := b.label
+	b.mu.Unlock()
+	if want := "red safe label exe.txt\ufffd"; label != want {
+		t.Fatalf("label = %q, want %q", label, want)
 	}
 }
 

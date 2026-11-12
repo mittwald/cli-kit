@@ -184,6 +184,11 @@ func TestEscapeTextDropsControls(t *testing.T) {
 	if got, want := EscapeText("a\x00b\x1bc\x7fd\te\r\nf"), "abcd\te\\nf"; got != want {
 		t.Errorf("EscapeText = %q, want %q", got, want)
 	}
+	// The C1 controls go too: a terminal the file is printed on would take
+	// U+009B for ESC [ and U+009D for ESC ]. U+00A0 and what follows stay.
+	if got, want := EscapeText("a\u0080b\u009b2Jc\u009d52;c;Zm9v\u009cd\u0085e\u009f\u00a0ü"), "ab2Jc52\\;c\\;Zm9vde\u00a0ü"; got != want {
+		t.Errorf("EscapeText = %q, want %q", got, want)
+	}
 	if got := EscapeText("\xffok"); got != "\uFFFDok" {
 		t.Errorf("EscapeText invalid UTF-8 = %q", got)
 	}
@@ -344,6 +349,7 @@ func TestParamQuote(t *testing.T) {
 		{Param{Value: `Smith "Jr."; ^x`, Quote: true}, `"Smith ^'Jr.^'; ^^x"`},
 		{Param{Value: "two\nlines", Quote: true}, `"two^nlines"`},
 		{Param{Value: "a\x00b\x7fc\td", Quote: true}, "\"abc\td\""},
+		{Param{Value: "Jane\u009b2J\u0085 Doe", Quote: true}, "\"Jane2J Doe\""},
 		{Param{Value: "bad\xff\xfe", Quote: true}, "\"bad\uFFFD\""},
 		// A value that needs quotes is quoted either way.
 		{Param{Value: "Doe, Jane", Quote: false}, `"Doe, Jane"`},
@@ -544,14 +550,16 @@ func TestMissingEnd(t *testing.T) {
 }
 
 func TestVerbatimUIDs(t *testing.T) {
-	const uid = " a\tb\u00a0c d;e,f\\g\r\n\x00h\x7fi "
+	const uid = " a\tb\u00a0c d;e,f\\g\r\n\x00h\x7fi\u0085j "
 	got := render(t, Calendar{VerbatimUIDs: true, Events: []Event{{UID: uid, Start: testStamp}}})
 	// Spaces, tab and no-break space stay, and so do the characters TEXT
-	// would escape, as in the default; the control characters go.
-	mustContain(t, got, "UID: a\tb\u00a0c d;e,f\\ghi \r\n")
+	// would escape, as in the default; the control characters RFC 5545
+	// forbids go, and a C1 control, which it allows, stays.
+	mustContain(t, got, "UID: a\tb\u00a0c d;e,f\\ghi\u0085j \r\n")
 
+	// By default the C1 control goes as well.
 	got = render(t, Calendar{Events: []Event{{UID: uid, Start: testStamp}}})
-	mustContain(t, got, "UID:ab\u00a0cd;e,f\\ghi\r\n")
+	mustContain(t, got, "UID:ab\u00a0cd;e,f\\ghij\r\n")
 
 	// Invalid UTF-8 is repaired as in TEXT values: one U+FFFD per run.
 	got = render(t, Calendar{VerbatimUIDs: true, Events: []Event{{UID: "a\xff\xfeb", Start: testStamp}}})

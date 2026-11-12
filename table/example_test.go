@@ -54,3 +54,14 @@ func ExampleWithFormat_csv() {
 	// api,"scaled up, then down"
 	// worker,line one; line two
 }
+
+// Names and comments from a server are shown as plain text: the window title,
+// the cleared screen and the colors they tried to set are gone.
+func ExamplePlainCells() {
+	t := table.New(os.Stdout, []string{"Name", "Comment"}, table.WithColor(false), table.PlainCells())
+	t.Append("Ada\x1b]0;pwned\x07", "\x1b[2J\x1b[31mURGENT\x1b[0m: call me")
+	_ = t.Render()
+	// Output:
+	// Name  Comment
+	// Ada   URGENT: call me
+}

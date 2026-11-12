@@ -39,7 +39,20 @@ type Table struct {
 	theme           *theme.Theme
 	align           []Align
 	recordLineJoin  string
+	cells           cellText
 }
+
+// cellText is what a drawn table does with the escape sequences and control
+// characters in its cells: the zero cellText draws them as they are. See
+// [SanitizeCells] and [PlainCells].
+type cellText int
+
+const (
+	// cellsSanitized draws cells as term.SanitizeLines leaves them.
+	cellsSanitized cellText = iota + 1
+	// cellsPlain draws cells as term.Plain leaves them.
+	cellsPlain
+)
 
 // Option configures a [Table]. Options apply in order, so a later option
 // overrides an earlier one that sets the same thing.
@@ -124,8 +137,31 @@ func WithAlignment(aligns ...Align) Option {
 // and TSV output, where a record is one line. The default is "; ".
 func WithRecordLineJoin(sep string) Option { return func(t *Table) { t.recordLineJoin = sep } }
 
+// SanitizeCells makes the cells of a drawn table, its header cells
+// included, safe to show when they hold text from elsewhere: each goes
+// through term.Sanitize, which keeps colors, the data's as much as the
+// caller's, and takes out every other escape sequence (an OSC 8 link the
+// caller added, too) and every control character but the newline. Each line
+// of a multi-line cell stands on its own, as term.SanitizeLines makes it,
+// so a color never runs into the padding or rules beside it. Markdown and
+// record output are always plain text and do not need it. See [PlainCells]
+// for cells that should keep no colors at all.
+func SanitizeCells() Option { return func(t *Table) { t.cells = cellsSanitized } }
+
+// PlainCells makes the cells of a drawn table, its header cells included,
+// plain text: each goes through term.Plain, which takes out every escape
+// sequence, colors included, and every control character but the newline.
+// Use it for a table of text from elsewhere that the program does not paint
+// cell by cell; the header and rule colors the table paints itself stay.
+// Markdown and record output are always plain text and do not need it.
+func PlainCells() Option { return func(t *Table) { t.cells = cellsPlain } }
+
 // Append adds a row. Cells may carry escape sequences and newlines; a row
-// may be shorter or longer than the header.
+// may be shorter or longer than the header. A drawn table shows them as
+// they are unless [SanitizeCells] or [PlainCells] says otherwise, so text
+// from elsewhere in a cell has to be made safe first, with one of these or
+// term.Sanitize or term.Plain; Markdown and record output make every cell
+// plain text.
 func (t *Table) Append(cells ...string) {
 	t.rows = append(t.rows, append([]string(nil), cells...))
 }
@@ -211,13 +247,20 @@ func (t *Table) alignment(col int) Align {
 }
 
 // prepare returns the cells as they are drawn: headers transformed, line
-// endings normalized, and the style's escaping and folding applied. The
-// table's own cells stay untouched, so rendering twice gives the same output.
+// endings normalized, made safe as the style or the cell option asks, and the
+// style's escaping and folding applied. The table's own cells stay untouched,
+// so rendering twice gives the same output.
 func (t *Table) prepare() ([]string, [][]string) {
 	cell := func(s string) string {
-		s = strings.ReplaceAll(s, "\r\n", "\n")
-		if t.style.Verbatim {
-			s = term.StripANSI(s)
+		switch {
+		case t.style.Verbatim:
+			s = plainCell(s)
+		case t.cells == cellsPlain:
+			s = term.Plain(strings.ReplaceAll(s, "\r\n", "\n"))
+		case t.cells == cellsSanitized:
+			s = sanitizedCell(strings.ReplaceAll(s, "\r\n", "\n"))
+		default:
+			s = strings.ReplaceAll(s, "\r\n", "\n")
 		}
 		if t.style.Flatten {
 			s = strings.ReplaceAll(s, "\n", t.style.lineBreak())
@@ -242,6 +285,27 @@ func (t *Table) prepare() ([]string, [][]string) {
 		}
 	}
 	return headers, rows
+}
+
+// plainCell makes a cell of verbatim output plain text, as term.Plain does,
+// after turning every carriage return into a line break: such output is
+// never painted, and a carriage return in a cell that is pasted or printed
+// would draw the rest of its line over the start, where both halves should
+// be read.
+func plainCell(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return term.Plain(strings.ReplaceAll(s, "\r", "\n"))
+}
+
+// sanitizedCell is term.Sanitize for a drawn cell, every line standing on its
+// own as term.SanitizeLines makes it, and a final newline kept as the empty
+// last line a drawn cell gives it.
+func sanitizedCell(s string) string {
+	lines := term.SanitizeLines(s)
+	if strings.HasSuffix(s, "\n") {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func columnWidths(headers []string, rows [][]string) []int {

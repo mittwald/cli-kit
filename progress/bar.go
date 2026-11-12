@@ -7,8 +7,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
@@ -175,12 +173,16 @@ func (b *Bar) Start(total int, timeout time.Duration) {
 }
 
 // Advance counts one step as done and shows label as the step now being
-// worked on.
+// worked on. The label is shown as term.PlainLine leaves it, on the bar's
+// one line and without escape sequences, so a label taken from untrusted
+// input cannot move the cursor, change the window title or break the bar
+// onto a second line.
 func (b *Bar) Advance(label string) {
 	b.update(label, true)
 }
 
-// SetLabel shows label without counting a step.
+// SetLabel shows label without counting a step, made plain as [Bar.Advance]
+// makes it.
 func (b *Bar) SetLabel(label string) {
 	b.update(label, false)
 }
@@ -198,7 +200,7 @@ func (b *Bar) update(label string, step bool) {
 		b.current++
 	}
 	b.visual = max(b.visual, float64(b.current))
-	b.label = sanitizeLabel(label)
+	b.label = term.PlainLine(label)
 	b.drawLocked()
 }
 
@@ -488,59 +490,4 @@ func (b *Bar) paint(text string, filled int) string {
 // fitWidth pads or cuts s to exactly width cells.
 func fitWidth(s string, width int) string {
 	return term.PadRight(term.Truncate(s, width), width)
-}
-
-// sanitizeLabel removes escape sequences and other control characters from
-// a label, so a label taken from untrusted input cannot move the cursor,
-// change the window title, or break the bar onto a second line. A tab
-// becomes a space.
-func sanitizeLabel(label string) string {
-	var clean strings.Builder
-	clean.Grow(len(label))
-	for i := 0; i < len(label); {
-		if label[i] == '\x1b' {
-			i++
-			if i >= len(label) {
-				break
-			}
-			switch label[i] {
-			case '[': // CSI: parameters and intermediates, then a final byte.
-				i++
-				for i < len(label) {
-					final := label[i]
-					i++
-					if final >= '@' && final <= '~' {
-						break
-					}
-				}
-			case ']', 'P', '_', '^': // OSC, DCS, APC, PM: ended by BEL or ST.
-				i++
-				for i < len(label) {
-					if label[i] == '\a' {
-						i++
-						break
-					}
-					if label[i] == '\x1b' && i+1 < len(label) && label[i+1] == '\\' {
-						i += 2
-						break
-					}
-					i++
-				}
-			default: // A two-byte escape.
-				i++
-			}
-			continue
-		}
-		char, size := utf8.DecodeRuneInString(label[i:])
-		if unicode.IsControl(char) {
-			if char == '\t' {
-				clean.WriteByte(' ')
-			}
-			i += size
-			continue
-		}
-		clean.WriteString(label[i : i+size])
-		i += size
-	}
-	return clean.String()
 }

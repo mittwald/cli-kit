@@ -22,6 +22,21 @@
 //
 // Header cells and frame rules are painted with the active theme's Header and
 // Border styles when term.Colored reports color for the writer, or as
-// [WithColor] decides. Markdown and record output is never painted, and
-// escape sequences in their cells are removed.
+// [WithColor] decides. Markdown and record output is never painted.
+//
+// # Text from elsewhere
+//
+// Markdown and record output is pasted, parsed or printed as it stands, and
+// nothing in it is painted, so every cell becomes plain text there, whoever
+// wrote it: escape sequences and control characters are removed as
+// term.Plain removes them, a carriage return becomes a line break, and in a
+// record a tab becomes a space. A record then carries no control character
+// but the separators and line ends of its format.
+//
+// A drawn table shows its cells as they are by default, since it cannot tell
+// the escape sequences a caller painted into a cell, a color or an OSC 8
+// link, from ones that came with the data. Text from elsewhere goes through
+// term.Sanitize or term.Plain before it is painted and appended, or the
+// table does it for every cell: [SanitizeCells] keeps colors and removes
+// everything else, [PlainCells] removes colors too.
 package table

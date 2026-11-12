@@ -220,3 +220,63 @@ func TestCustomGutter(t *testing.T) {
 		t.Fatalf("custom gutter not applied: %q", got)
 	}
 }
+
+// Markdown is pasted or printed as it stands: its cells become plain text,
+// and a carriage return a line break, so neither half of the cell hides the
+// other.
+func TestMarkdownCellsArePlainText(t *testing.T) {
+	tbl := New(&bytes.Buffer{}, []string{"Name", "Note", "Pay", "Raw"}, WithStyle(Markdown))
+	tbl.Append(untrustedRow...)
+	want := "| Name         | Note | Pay                               | Raw         |\n" +
+		"|--------------|------|-----------------------------------|-------------|\n" +
+		"| Ada Lovelace | ok   | pay the attacker<br>pay your bank | a       bc\ufffd |\n"
+	if got := render(t, tbl); got != want {
+		t.Fatalf("markdown mismatch\nwant:\n%q\ngot:\n%q", want, got)
+	}
+}
+
+// A drawn table shows its cells as they are unless asked otherwise: it
+// cannot tell a caller's colors and links from the data's.
+func TestDrawnCellsAreShownAsGiven(t *testing.T) {
+	tbl := New(&bytes.Buffer{}, nil, WithColor(false))
+	tbl.Append(theme.Bold.Paint("Ada"), "\x1b]8;;https://example.com\x1b\\site\x1b]8;;\x1b\\")
+	got := render(t, tbl)
+	if !strings.Contains(got, theme.Bold.Paint("Ada")) || !strings.Contains(got, "\x1b]8;;https://example.com") {
+		t.Fatalf("drawn cells changed: %q", got)
+	}
+}
+
+// SanitizeCells keeps colors and takes out everything else; every line of a
+// multi-line cell carries its own colors and closes them.
+func TestSanitizeCells(t *testing.T) {
+	tbl := New(&bytes.Buffer{}, []string{"Name\x1b]0;title\x07", "Note"}, WithStyle(ASCII), WithColor(false), SanitizeCells())
+	tbl.Append("\x1b[31mred\nstill red\x1b[0m", "\x1b]8;;https://evil.example\x1b\\click\x1b]8;;\x1b\\\u009b2J\x07")
+	want := "+-----------+-------+\n" +
+		"| Name      | Note  |\n" +
+		"+-----------+-------+\n" +
+		"| \x1b[31mred\x1b[0m       | click |\n" +
+		"| \x1b[31mstill red\x1b[0m |       |\n" +
+		"+-----------+-------+\n"
+	if got := render(t, tbl); got != want {
+		t.Fatalf("sanitized table mismatch\nwant:\n%q\ngot:\n%q", want, got)
+	}
+}
+
+// PlainCells takes out colors too, but not the header color the table paints.
+func TestPlainCells(t *testing.T) {
+	tbl := New(&bytes.Buffer{}, []string{"\x1b[31mName"}, WithColor(true), PlainCells())
+	tbl.Append("\x1b[1mAda\x1b[0m\x1b]52;c;Zm9v\x07")
+	want := theme.Active().Header.Paint("Name") + "\nAda\n"
+	if got := render(t, tbl); got != want {
+		t.Fatalf("plain table mismatch\nwant:\n%q\ngot:\n%q", want, got)
+	}
+}
+
+// Of SanitizeCells and PlainCells, the one given last wins.
+func TestLastCellOptionWins(t *testing.T) {
+	tbl := New(&bytes.Buffer{}, nil, WithColor(false), PlainCells(), SanitizeCells())
+	tbl.Append("\x1b[31mred\x1b[0m")
+	if got, want := render(t, tbl), "\x1b[31mred\x1b[0m\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

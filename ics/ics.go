@@ -75,10 +75,12 @@ type Calendar struct {
 	// day after the start for an all-day event.
 	MissingEnd EndMode
 	// VerbatimUIDs writes every [Event.UID] as given: only the control
-	// characters RFC 5545 allows in no content line, which are all but tab,
-	// are removed, and invalid UTF-8 is replaced with U+FFFD. By default,
-	// whitespace is removed too. Set it when the UIDs come from a scheme of
-	// the caller's own that has to stay stable even where it lets whitespace
+	// characters RFC 5545 allows in no content line, the C0 controls but tab
+	// and DEL, are removed, and invalid UTF-8 is replaced with U+FFFD. The
+	// C1 controls, which RFC 5545 allows, stay, so a UID keeps the form a
+	// feed published. By default, whitespace and the C1 controls are removed
+	// too. Set it when the UIDs come from a scheme of the caller's own that
+	// has to stay stable even where it lets whitespace or C1 controls
 	// through, such as UIDs a feed has published before: clients key events
 	// by UID, so a changed UID duplicates the event in every subscribed
 	// client. A UID that is empty or only whitespace is still
@@ -191,7 +193,9 @@ func TextProperty(name, value string, params ...Param) Property {
 // String returns the property as one unfolded content line without CRLF.
 // Parameter values are caret encoded as RFC 6868 describes and quoted when
 // they contain ":", ";" or ",", so they cannot end the parameter early;
-// [Param.Quote] and [Param.LineBreak] change that per parameter.
+// [Param.Quote] and [Param.LineBreak] change that per parameter. Control
+// characters in them are dropped, line breaks and tab aside, as
+// [EscapeText] drops them.
 func (p Property) String() string {
 	var b strings.Builder
 	b.WriteString(strings.ToUpper(p.Name))
@@ -233,17 +237,20 @@ var textEscaper = strings.NewReplacer(
 )
 
 // EscapeText encodes s as an RFC 5545 TEXT value: backslashes, semicolons
-// and commas are escaped, line breaks become \n, other control characters
-// are dropped, and invalid UTF-8 is replaced with U+FFFD.
+// and commas are escaped, line breaks become \n, the other control
+// characters but tab are dropped (the C0 controls, DEL and the C1 controls),
+// and invalid UTF-8 is replaced with U+FFFD. RFC 5545 allows the C1
+// controls, but no calendar shows them, and a terminal the file is printed
+// on takes U+009B for ESC [ and U+009D for ESC ].
 func EscapeText(s string) string {
 	return textEscaper.Replace(stripControls(strings.ToValidUTF8(s, "�")))
 }
 
-// stripControls drops C0 control characters and DEL, keeping tab and the
-// line breaks that the callers encode themselves.
+// stripControls drops the control characters text has no use for, keeping
+// tab and the line breaks that the callers encode themselves.
 func stripControls(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || !isControl(r) {
+		if r == '\n' || r == '\r' || !textControl(r) {
 			return r
 		}
 		return -1
@@ -254,6 +261,17 @@ func stripControls(s string) string {
 // line: a C0 control other than tab, or DEL.
 func isControl(r rune) bool {
 	return (r < 0x20 && r != '\t') || r == 0x7f
+}
+
+// textControl reports whether r is a control character text has no use for:
+// one RFC 5545 allows in no content line, or a C1 control.
+func textControl(r rune) bool {
+	return isControl(r) || isC1(r)
+}
+
+// isC1 reports whether r is a C1 control, U+0080 to U+009F.
+func isC1(r rune) bool {
+	return r >= 0x80 && r <= 0x9f
 }
 
 // Fold splits one content line into physical lines of at most 75 octets,
@@ -308,11 +326,11 @@ func HashUID(domain string, parts ...string) string {
 	return uid
 }
 
-// sanitizeUID removes what a UID must not contain: control characters and
-// whitespace.
+// sanitizeUID removes what a UID must not contain: control characters (C0,
+// DEL and C1) and the ASCII space.
 func sanitizeUID(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r <= 0x20 || r == 0x7f {
+		if r <= 0x20 || r == 0x7f || isC1(r) {
 			return -1
 		}
 		return r

@@ -15,7 +15,7 @@ const Ellipsis = "…"
 // hyperlinks (ESC ] … BEL or ESC \), and the short escapes such as ESC 7
 // and ESC ( B. Everything else, multi-byte runes included, is left
 // untouched. It does not make text from elsewhere safe to show: control
-// characters stay. [Sanitize] does that.
+// characters stay. [Sanitize] and [Plain] do that.
 func StripANSI(s string) string {
 	if !strings.Contains(s, "\x1b") {
 		return s
