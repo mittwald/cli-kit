@@ -61,7 +61,9 @@ func TestFileInputReadCanBeWoken(t *testing.T) {
 		t.Fatal("wakes() = false on Unix")
 	}
 
+	woke := make(chan struct{})
 	go func() {
+		defer close(woke)
 		time.Sleep(10 * time.Millisecond)
 		in.wake()
 		in.wake()
@@ -69,6 +71,10 @@ func TestFileInputReadCanBeWoken(t *testing.T) {
 	if keys, err := in.read(); !errors.Is(err, errWoken) || len(keys) != 0 {
 		t.Fatalf("read() = %q, %v; want errWoken", keys, err)
 	}
+	// The read may have returned between the two wakes. The second is
+	// waited for, so that it is answered below, before the key, rather
+	// than turning up in a read further down that expects something else.
+	<-woke
 	// Keys still arrive after a wake, and are not lost to one before it.
 	_, _ = w.Write([]byte("x"))
 	for {
