@@ -104,17 +104,7 @@ func NewCursor(w io.Writer) *Cursor {
 // returns nil for a writer that cannot be told apart from others, which then
 // counts as a terminal of its own.
 func screenOf(w io.Writer) any {
-	for w != nil {
-		wrapper, ok := w.(interface{ Unwrap() io.Writer })
-		if !ok {
-			break
-		}
-		inner := wrapper.Unwrap()
-		if inner == nil {
-			break
-		}
-		w = inner
-	}
+	w = innermost(w)
 	if w == nil {
 		return nil
 	}
@@ -126,6 +116,24 @@ func screenOf(w io.Writer) any {
 		return w
 	}
 	return nil
+}
+
+// innermost returns the writer behind every Unwrap of w: the one that
+// reaches the terminal where w is a decorator around it, such as the writer
+// term.Links returns. Whatever asks the terminal something asks that one.
+func innermost(w io.Writer) io.Writer {
+	for w != nil {
+		wrapper, ok := w.(interface{ Unwrap() io.Writer })
+		if !ok {
+			break
+		}
+		inner := wrapper.Unwrap()
+		if inner == nil {
+			break
+		}
+		w = inner
+	}
+	return w
 }
 
 // HideCursor hides the cursor of the terminal w writes to and returns the

@@ -425,3 +425,96 @@ func TestStatusErasesOnce(t *testing.T) {
 		t.Errorf("what was written after the status line is gone: %q", drawn.String())
 	}
 }
+
+// A terminal that takes no more output, as after Ctrl-S or behind a reader
+// that stopped, holds a redraw up for as long as it likes, and with it the
+// erasing of the block. Where the process is about to end, the mode of the
+// terminal must be put back all the same: live's signal handler waits a
+// moment for it and no longer, and the prompt's own watcher raises the
+// signal again only once it is done.
+func TestSessionPutsTheModeBackWhileOutputIsStalled(t *testing.T) {
+	for _, way := range []string{"live's handler", "the prompt's own watcher"} {
+		t.Run(way, func(t *testing.T) {
+			master, slave := openPTY(t)
+			before, err := unix.IoctlGetTermios(int(slave.Fd()), unix.TCGETS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := openTerminal(slave, slave, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Nobody reads the other end, so a draw fills the terminal's
+			// buffer and then blocks, holding the block's lock.
+			var draws atomic.Int64
+			frame := []string{strings.Repeat("x", 70), strings.Repeat("y", 70)}
+			go func() {
+				for s.screen.draw(frame) == nil {
+					draws.Add(1)
+				}
+			}()
+			stalled := func() bool {
+				seen := draws.Load()
+				time.Sleep(100 * time.Millisecond)
+				return draws.Load() == seen
+			}
+			for deadline := time.Now().Add(10 * time.Second); !stalled(); {
+				if time.Now().After(deadline) {
+					t.Fatal("the terminal kept taking output")
+				}
+			}
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				if way == "live's handler" {
+					s.restored()
+				} else {
+					s.releaseNow()
+				}
+			}()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Error("the terminal was not put back while its output was stalled")
+			}
+			after, err := unix.IoctlGetTermios(int(slave.Fd()), unix.TCGETS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if *after != *before {
+				t.Errorf("the terminal was left in another mode: local flags %#o, want %#o", after.Lflag, before.Lflag)
+			}
+
+			// Once the terminal takes output again, the cursor is shown, and
+			// the block is not erased from a screen that moved on meanwhile.
+			var drawn strings.Builder
+			read := make(chan struct{})
+			go func() {
+				defer close(read)
+				buf := make([]byte, 4096)
+				for !strings.Contains(drawn.String(), showCursor) {
+					n, err := master.Read(buf)
+					drawn.Write(buf[:n])
+					if err != nil {
+						return
+					}
+				}
+			}()
+			select {
+			case <-read:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the cursor was never shown again")
+			}
+			if !strings.Contains(drawn.String(), showCursor) {
+				t.Errorf("the cursor was not shown again: %q", drawn.String())
+			}
+			// A draw ends in the same sequence an erasure does, but only an
+			// erasure follows the way up to the first line with it at once.
+			if strings.Contains(drawn.String(), "\x1b[1A\x1b[J") {
+				t.Errorf("the block was erased after the terminal had been given up: %q", drawn.String()[max(len(drawn.String())-60, 0):])
+			}
+			s.close()
+		})
+	}
+}

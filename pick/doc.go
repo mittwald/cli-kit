@@ -51,6 +51,11 @@
 // process ignores is left alone. SIGKILL cannot be caught: a process ended
 // that way leaves the terminal in raw mode.
 //
+// A terminal that takes no more output, as after Ctrl-S, cannot be written
+// to, so the prompt cannot erase itself there. The mode is put back all the
+// same, a moment after the signal: the prompt then stays on the screen, and
+// the cursor is shown once the terminal takes output again.
+//
 // A prompt also registers with package live for as long as it is up, so a
 // program that uses live to leave its terminal in order has its prompts
 // covered: the signal handler of live.InstallSignalRestore, which ends the

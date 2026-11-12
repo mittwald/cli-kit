@@ -88,11 +88,15 @@ type session struct {
 	theme   theme.Theme
 	// unwatch ends the session's own watch for signals and unhook takes it
 	// out of the functions package live calls on its ways out of the
-	// process. released makes sure the terminal is put back once, whoever
-	// gets to it first: the end of the prompt, the watch, or live.
-	unwatch  func()
-	unhook   func()
-	released sync.Once
+	// process.
+	unwatch func()
+	unhook  func()
+	// tidied makes sure the block is erased and the cursor shown once, and
+	// moded that the terminal's mode is put back once, whoever gets to it
+	// first: the end of the prompt, the watch, or live. They are two things
+	// because the first writes to the terminal and waits for it, and the
+	// second must not wait for anything.
+	tidied, moded sync.Once
 }
 
 // openTerminal switches in to raw mode and, when hide is set, hides the
@@ -119,7 +123,7 @@ func openTerminal(in, out *os.File, hide bool) (*session, error) {
 	}
 	// A signal that ends the process finds the terminal put back. Should
 	// the process outlive it, the key loop is left with ErrInterrupted.
-	s.unwatch = watchSignals(s.release, s.source.interrupt)
+	s.unwatch = watchSignals(s.releaseNow, s.source.interrupt)
 	// An application that installed live's signal handler is ended by that
 	// handler, which waits for nobody but the functions registered with it.
 	s.unhook = live.OnRestore(s.restored)
@@ -136,13 +140,56 @@ func (s *session) size() (int, int) { return terminalSize(s.out) }
 
 // release erases the block while the terminal is still raw, so the carriage
 // returns land, and only then restores the mode and the cursor. Nothing is
-// drawn after it.
+// drawn after it. It waits for the terminal to take what it writes, which
+// is right at the end of a prompt whose program goes on.
 func (s *session) release() {
-	s.released.Do(func() {
+	s.tidy()
+	s.restoreMode()
+}
+
+// tidyTimeout is how long releaseNow waits for the block to be erased
+// before it puts the mode back without that: less than the moment package
+// live gives the functions registered with it.
+const tidyTimeout = 50 * time.Millisecond
+
+// releaseNow is release where the process is about to end, on a signal or
+// one of live's ways out. A terminal that takes no more output, as after
+// Ctrl-S or behind a reader that stopped, holds a redraw up for as long as
+// it likes, and the erasing of the block behind it. The mode is what must
+// not be left behind, since a shell in raw mode echoes nothing, so it is
+// put back after tidyTimeout whether or not the block is gone. A block
+// that could not be erased by then is given up: erased later, it would
+// take lines of a screen that has moved on. The cursor is still shown once
+// the terminal takes output again.
+func (s *session) releaseNow() {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.tidy()
+	}()
+	timer := time.NewTimer(tidyTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		s.screen.abandon()
+	}
+	s.restoreMode()
+}
+
+// tidy erases the block and shows the cursor, once.
+func (s *session) tidy() {
+	s.tidied.Do(func() {
 		_ = s.screen.end()
 		_, _ = io.WriteString(s.out, showCursor)
-		_ = xterm.Restore(int(s.in.Fd()), s.restore)
 	})
+}
+
+// restoreMode puts the terminal back into the mode it was found in, once.
+// It writes nothing, so a terminal that takes no output does not hold it
+// up.
+func (s *session) restoreMode() {
+	s.moded.Do(func() { _ = xterm.Restore(int(s.in.Fd()), s.restore) })
 }
 
 // restored is what package live calls where it takes the process to be
@@ -154,15 +201,18 @@ func (s *session) release() {
 // session saw itself: a prompt erased from the screen has no answer to wait
 // for.
 func (s *session) restored() {
-	s.release()
+	s.releaseNow()
 	time.AfterFunc(restoreGrace, s.source.interrupt)
 }
 
-// close puts the terminal back and lets go of what the session held.
+// close puts the terminal back and lets go of what the session held. The
+// signals are watched until the terminal is back: one that arrives while a
+// stalled terminal holds the erasing up still finds the mode put back
+// before it ends the process.
 func (s *session) close() {
+	s.release()
 	s.unwatch()
 	s.unhook()
-	s.release()
 	s.source.close()
 }
 
@@ -489,12 +539,20 @@ type renderer struct {
 	column int
 	// ended says the block was erased for good; nothing is drawn after.
 	ended bool
+	// abandoned says the block was given up while a write to a stalled
+	// terminal still held mu: nothing is drawn after, and the block is not
+	// erased either once the lock is free. It is set without the lock.
+	abandoned atomic.Bool
 }
+
+// abandon gives the block up without waiting for a draw in progress: from
+// now on nothing is drawn and nothing erased.
+func (r *renderer) abandon() { r.abandoned.Store(true) }
 
 func (r *renderer) draw(lines []string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.ended {
+	if r.ended || r.abandoned.Load() {
 		return nil
 	}
 	var b strings.Builder
@@ -517,7 +575,7 @@ func (r *renderer) draw(lines []string) error {
 func (r *renderer) placeCursor(column int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.ended {
+	if r.ended || r.abandoned.Load() {
 		return nil
 	}
 	if column < 1 {
@@ -540,6 +598,10 @@ func (r *renderer) end() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ended = true
+	if r.abandoned.Load() {
+		r.lines, r.drawn = nil, false
+		return nil
+	}
 	return r.erase()
 }
 

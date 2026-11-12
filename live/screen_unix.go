@@ -50,11 +50,12 @@ func foreground(w io.Writer) bool {
 	return inForeground
 }
 
-// descriptor calls use with the file descriptor of w, an *os.File or
-// anything else that hands out its descriptor the same way. It goes through
-// SyscallConn rather than Fd, which would put the file into blocking mode.
+// descriptor calls use with the file descriptor of w, or of the writer w is
+// a decorator around: an *os.File or anything else that hands out its
+// descriptor the same way. It goes through SyscallConn rather than Fd, which
+// would put the file into blocking mode.
 func descriptor(w io.Writer, use func(fd uintptr)) {
-	file, ok := w.(interface {
+	file, ok := innermost(w).(interface {
 		SyscallConn() (syscall.RawConn, error)
 	})
 	if !ok {

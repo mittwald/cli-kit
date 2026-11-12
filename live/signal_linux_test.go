@@ -235,8 +235,14 @@ func waitInTheBackgroundWithHiddenCursor() {
 	if foreground(os.Stdout) {
 		os.Exit(5)
 	}
+	// The cursor writes through a decorator, as a program's own output
+	// writers do: the terminal behind it is the one asked.
+	decorated := wrapped{w: os.Stdout}
+	if foreground(decorated) {
+		os.Exit(6)
+	}
 	defer InstallSignalRestore()()
-	NewCursor(os.Stdout).Hide()
+	NewCursor(decorated).Hide()
 	time.Sleep(30 * time.Second) // the parent kills the child
 	os.Exit(3)
 }
