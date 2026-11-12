@@ -2,14 +2,20 @@ package pick
 
 import (
 	"os"
-	"strings"
 
+	"github.com/rivo/uniseg"
+
+	"github.com/mittwald/cli-kit/term"
 	"github.com/mittwald/cli-kit/theme"
 )
 
 // InputOptions configures one text prompt. The prompt is a single line with
 // the terminal's own cursor in the text, so it reads like any other prompt a
 // terminal puts up.
+//
+// Prompt, Subject and Value are shown as plain single-line text: escape
+// sequences and control characters in them are dropped, and a line break or
+// a tab becomes a space.
 type InputOptions struct {
 	// Prompt is written in front of the value, with one %s where Subject
 	// goes, such as "Name for %s: ". Anything more to say belongs on a line
@@ -20,6 +26,8 @@ type InputOptions struct {
 	// style inside the prompt.
 	Subject string
 	// Value is what the field starts out holding, with the cursor at its end.
+	// It is made plain text like the rest, so a value left as it is comes
+	// back the way it was shown.
 	Value string
 	// Secret draws nothing for what is typed, the way a password prompt does.
 	Secret bool
@@ -31,6 +39,11 @@ type InputOptions struct {
 // delete to the start, and Ctrl-K to delete to the end. Enter answers, Esc
 // returns ErrBack, and Ctrl-C or Ctrl-D returns ErrInterrupted. A cleared
 // field answers with the empty string.
+//
+// The caret moves and deletes by whole characters as they are drawn: a
+// letter with its combining marks, or an emoji made of several code points,
+// is one step. A value longer than the line scrolls with the caret, an
+// ellipsis standing where text is out of sight.
 func Input(in, out *os.File, opts InputOptions) (string, error) {
 	session, err := openTerminal(in, out, false)
 	if err != nil {
@@ -52,29 +65,33 @@ type editor struct {
 	prompt  string
 	subject string
 	value   []rune
-	// caret is a position between runes, from 0 to len(value).
-	caret  int
+	// caret is a position between runes, from 0 to len(value), and always
+	// between two grapheme clusters: what is drawn as one character is
+	// stepped over and deleted as one.
+	caret int
+	// first is the rune the drawn part of the value starts at, once the
+	// value is longer than the line and has scrolled.
+	first  int
 	secret bool
 	color  bool
 	theme  theme.Theme
 }
 
+// minValueRoom is how many cells the value is given at least on a line the
+// prompt would fill: the prompt is cut before the field is squeezed out.
+const minValueRoom = 8
+
 func newEditor(opts InputOptions, color bool) *editor {
-	value := []rune(opts.Value)
+	value := []rune(plainLine(opts.Value))
 	return &editor{
-		prompt:  opts.Prompt,
-		subject: opts.Subject,
+		prompt:  plainLine(opts.Prompt),
+		subject: plainLine(opts.Subject),
 		value:   value,
 		caret:   len(value),
 		secret:  opts.Secret,
 		color:   color,
 		theme:   theme.Active(),
 	}
-}
-
-// label is the prompt as drawn, subject filled in.
-func (e *editor) label() string {
-	return strings.ReplaceAll(e.prompt, "%s", e.subject)
 }
 
 // answer is what was typed.
@@ -93,26 +110,19 @@ func (e *editor) apply(k key) action {
 	case keyInterrupt:
 		return actionInterrupt
 	case keyLeft:
-		if e.caret > 0 {
-			e.caret--
-		}
+		e.caret = clusterBefore(e.value, e.caret)
 	case keyRight:
-		if e.caret < len(e.value) {
-			e.caret++
-		}
+		e.caret = clusterAfter(e.value, e.caret)
 	case keyHome, keyPageUp, keyUp:
 		e.caret = 0
 	case keyEnd, keyPageDown, keyDown:
 		e.caret = len(e.value)
 	case keyBackspace:
-		if e.caret > 0 {
-			e.value = deleteRunes(e.value, e.caret-1, e.caret)
-			e.caret--
-		}
+		start := clusterBefore(e.value, e.caret)
+		e.value = deleteRunes(e.value, start, e.caret)
+		e.caret = start
 	case keyDelete:
-		if e.caret < len(e.value) {
-			e.value = deleteRunes(e.value, e.caret, e.caret+1)
-		}
+		e.value = deleteRunes(e.value, e.caret, clusterAfter(e.value, e.caret))
 	case keyDeleteWord:
 		start := wordStart(e.value, e.caret)
 		e.value = deleteRunes(e.value, start, e.caret)
@@ -128,7 +138,56 @@ func (e *editor) apply(k key) action {
 		e.value = append(e.value[:e.caret], append([]rune{k.rune}, e.value[e.caret:]...)...)
 		e.caret++
 	}
+	// An edit can join what was two characters into one, as a joiner typed
+	// between two emoji does. The caret then moves behind the whole of it.
+	e.caret = clusterEnd(e.value, e.caret)
 	return actionNone
+}
+
+// clusterBounds are the positions between the grapheme clusters of value,
+// counted in runes: 0, the end of every cluster, the last being len(value).
+func clusterBounds(value []rune) []int {
+	bounds := []int{0}
+	graphemes := uniseg.NewGraphemes(string(value))
+	for graphemes.Next() {
+		bounds = append(bounds, bounds[len(bounds)-1]+len(graphemes.Runes()))
+	}
+	return bounds
+}
+
+// clusterBefore is where the cluster in front of caret starts, 0 at the
+// start of the value.
+func clusterBefore(value []rune, caret int) int {
+	before := 0
+	for _, bound := range clusterBounds(value) {
+		if bound >= caret {
+			break
+		}
+		before = bound
+	}
+	return before
+}
+
+// clusterAfter is where the cluster behind caret ends, len(value) at the
+// end of the value.
+func clusterAfter(value []rune, caret int) int {
+	for _, bound := range clusterBounds(value) {
+		if bound > caret {
+			return bound
+		}
+	}
+	return len(value)
+}
+
+// clusterEnd is caret when it stands between two clusters, else the end of
+// the cluster it stands in.
+func clusterEnd(value []rune, caret int) int {
+	for _, bound := range clusterBounds(value) {
+		if bound >= caret {
+			return bound
+		}
+	}
+	return len(value)
 }
 
 // wordStart is where the word ending at caret begins: the separators in
@@ -157,29 +216,105 @@ func deleteRunes(value []rune, from, to int) []rune {
 }
 
 // render is the one line: the prompt, with its subject and the answers it
-// spells out styled, and the value in the theme's value style. It is cut to
-// the terminal in reading order.
-func (e *editor) render(width int) []string {
-	if width <= 0 {
-		width = 80
+// spells out styled, and the value in the theme's value style.
+func (e *editor) render(n int) []string {
+	parts, _ := e.layout(n)
+	if n <= 0 {
+		n = 80
 	}
-	parts := promptParts(e.prompt, e.subject, e.theme)
-	if !e.secret {
-		parts = append(parts, styledText{string(e.value), e.theme.Value})
-	}
-	return []string{drawParts(parts, width, painter{color: e.color, theme: e.theme})}
+	return []string{drawParts(parts, n, painter{color: e.color, theme: e.theme})}
 }
 
-// cursorColumn is where the terminal's cursor belongs, 1-based: in front of
-// the rune the caret stands on, or in the last column when the value is
-// longer than the line.
+// cursorColumn is where the terminal's cursor belongs, 1-based: on the
+// character the caret stands in front of, or behind the last one.
 func (e *editor) cursorColumn(n int) int {
-	column := width(e.label()) + 1
-	if !e.secret {
-		column += width(string(e.value[:e.caret]))
-	}
-	if n > 0 && column > n {
-		return n
-	}
+	_, column := e.layout(n)
 	return column
+}
+
+// layout fits the line into n cells and says which column the caret is in,
+// 1-based. The value gets what the prompt leaves, less one cell for the
+// cursor behind its last character; a prompt that leaves the value less
+// than it needs is cut down to make room, to minValueRoom cells at most.
+func (e *editor) layout(n int) ([]styledText, int) {
+	if n <= 0 {
+		n = 80
+	}
+	label := promptParts(e.prompt, e.subject, e.theme)
+	labelWidth := width(partsText(label))
+	if e.secret {
+		return label, min(labelWidth+1, n)
+	}
+	need := min(width(string(e.value)), minValueRoom)
+	if most := max(n-1-need, 0); labelWidth > most {
+		label = cutParts(label, most)
+		labelWidth = width(partsText(label))
+	}
+	shown, before := e.window(n - labelWidth - 1)
+	column := min(labelWidth+before+1, n)
+	return append(label, styledText{shown, e.theme.Value}), column
+}
+
+// window is the stretch of the value drawn in room cells, and how many of
+// its cells lie in front of the caret. A value that fits is drawn whole.
+// One that does not scrolls with the caret, as far as it has to and no
+// further, with an ellipsis at either end that hides text. The ellipsis at
+// the end may stand in the cell past room, the one kept for the cursor.
+func (e *editor) window(room int) (string, int) {
+	bounds := clusterBounds(e.value)
+	count := len(bounds) - 1
+	widths := make([]int, count)
+	caret, first := count, 0
+	for i := range count {
+		widths[i] = width(string(e.value[bounds[i]:bounds[i+1]]))
+		if bounds[i] == e.caret {
+			caret = i
+		}
+		if bounds[i] <= e.first {
+			first = i
+		}
+	}
+	span := func(from, to int) int {
+		cells := 0
+		for _, w := range widths[from:to] {
+			cells += w
+		}
+		return cells
+	}
+	if span(0, count) <= room {
+		e.first = 0
+		return string(e.value), span(0, caret)
+	}
+	if room <= 0 {
+		return "", 0
+	}
+	// The ellipsis in front of a scrolled value takes a cell of its own.
+	lead := func(from int) int {
+		if from > 0 {
+			return 1
+		}
+		return 0
+	}
+	first = min(first, caret)
+	for first < caret && lead(first)+span(first, caret) > room {
+		first++
+	}
+	// After a deletion the rest may fit from further left again.
+	for first > 0 && lead(first-1)+span(first-1, count) <= room {
+		first--
+	}
+	e.first = bounds[first]
+	cells, end := lead(first), first
+	for end < count && cells+widths[end] <= room {
+		cells += widths[end]
+		end++
+	}
+	shown := string(e.value[bounds[first]:bounds[end]])
+	if first > 0 {
+		shown = term.Ellipsis + shown
+	}
+	if end < count {
+		shown += term.Ellipsis
+	}
+	return shown, lead(first) + span(first, caret)
 }

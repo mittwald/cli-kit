@@ -48,3 +48,16 @@ func ExampleCursor() {
 		fmt.Fprint(os.Stderr, "\rworking…")
 	}()
 }
+
+func ExampleOnRestore() {
+	// A prompt that put the terminal into raw mode registers how to put it
+	// back, for the exits that skip its deferred calls.
+	remove := live.OnRestore(func() { fmt.Println("terminal mode restored") })
+	defer remove()
+
+	// The signal handler of InstallSignalRestore does this before it ends
+	// the process.
+	live.RestoreAll()
+	// Output:
+	// terminal mode restored
+}

@@ -18,15 +18,22 @@ type GitHub struct {
 	Owner string
 	Repo  string
 	// Token supplies the credential; nil sends none, which suits public
-	// repositories within the unauthenticated rate limit.
+	// repositories within the unauthenticated rate limit. The credential
+	// only goes to the origin of APIURL; see [TokenFunc].
 	Token TokenFunc
 	// APIURL is the API root; empty means https://api.github.com. Set it
 	// for GitHub Enterprise Server ("https://github.example.com/api/v3") or
-	// tests.
+	// tests. With a Token it has to be an https URL, or an http URL of a
+	// loopback address.
 	APIURL string
-	// Client sends the requests; nil means http.DefaultClient. A redirect
-	// to another origin (scheme, host and port) never carries the
-	// credential; the client's own CheckRedirect still applies.
+	// Client sends the requests. Nil means a client of this package's own
+	// that gives up on a server that does not connect, finish the TLS
+	// handshake or send response headers within half a minute, and on a
+	// response body that delivers nothing for a minute; a whole request has
+	// no time limit, as a download may take long. A Client set here is used
+	// as it is: its timeouts, and the context's deadline, are the caller's
+	// to set. A redirect to another origin (scheme, host and port) never
+	// carries the credential; the client's own CheckRedirect still applies.
 	Client *http.Client
 	// UserAgent identifies the requests; empty means a generic default.
 	UserAgent string
@@ -39,14 +46,15 @@ func (g *GitHub) api() string {
 	return strings.TrimRight(g.APIURL, "/")
 }
 
-func (g *GitHub) requester() requester {
-	return requester{
+func (g *GitHub) requester() *requester {
+	return &requester{
 		client:     g.Client,
 		token:      g.Token,
 		userAgent:  g.UserAgent,
 		headers:    map[string]string{"X-GitHub-Api-Version": "2022-11-28"},
 		authHeader: "Authorization",
 		authScheme: "Bearer",
+		origin:     g.api(),
 	}
 }
 
@@ -83,7 +91,9 @@ func (g *GitHub) Latest(ctx context.Context) (Release, error) {
 
 // Download implements Source. It downloads through the asset's API URL,
 // which works for private repositories too; the redirect to the storage
-// host does not carry the credential along.
+// host does not carry the credential along. An asset whose URL is not on
+// the origin of APIURL, as no release GitHub lists has, is requested
+// without the credential.
 func (g *GitHub) Download(ctx context.Context, rel Release, name string) (io.ReadCloser, error) {
 	for _, a := range rel.Assets {
 		if a.Name != name {
@@ -95,5 +105,5 @@ func (g *GitHub) Download(ctx context.Context, rel Release, name string) (io.Rea
 		}
 		return resp.Body, nil
 	}
-	return nil, fmt.Errorf("%w: release %s has no file %s", ErrAssetNotFound, rel.Tag, name)
+	return nil, fmt.Errorf("%w: release %s has no file %s", ErrAssetNotFound, plain(rel.Tag), plain(name))
 }

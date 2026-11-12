@@ -189,3 +189,133 @@ func TestDrivePlacesTheTerminalCursor(t *testing.T) {
 		t.Errorf("drive() placed a cursor for a list: %q", listOut.String())
 	}
 }
+
+// The prompt, its subject and the value a field starts with are drawn as
+// plain text, and the value comes back the way it was shown.
+func TestEditorDrawsCallerTextPlain(t *testing.T) {
+	e := newEditor(InputOptions{Prompt: "Name\x1b[2J for %s:\t", Subject: "x\x1b]0;t\x07y\n", Value: "v\u009b2Jw\rz"}, false)
+	if got, want := e.render(80)[0], "Name for xy : vw z"; got != want {
+		t.Errorf("render() = %q, want %q", got, want)
+	}
+	if got, want := e.answer(), "vw z"; got != want {
+		t.Errorf("answer() = %q, want %q", got, want)
+	}
+	// The space a prompt ends in is the caller's and stays.
+	e = newEditor(InputOptions{Prompt: "Password: ", Secret: true}, false)
+	if got, want := e.render(80)[0], "Password: "; got != want {
+		t.Errorf("render() = %q, want %q", got, want)
+	}
+}
+
+// The caret is drawn where the prompt as drawn ends: the subject goes in
+// for the first %s only, in the line and in the count alike.
+func TestEditorCountsThePromptAsItIsDrawn(t *testing.T) {
+	e := newEditor(InputOptions{Prompt: "Rename %s (was %s): ", Subject: "production", Value: "x"}, false)
+	line := e.render(80)[0]
+	if want := "Rename production (was %s): x"; line != want {
+		t.Fatalf("render() = %q, want %q", line, want)
+	}
+	if got, want := e.cursorColumn(80), width(line)+1; got != want {
+		t.Errorf("cursorColumn() = %d, want %d, right behind the value", got, want)
+	}
+}
+
+// What is drawn as one character is one step for the caret and one
+// Backspace, however many code points it is made of.
+func TestEditorStepsOverGraphemeClusters(t *testing.T) {
+	const family = "👨\u200d👩\u200d👧"
+	e := newEditor(InputOptions{Prompt: "> ", Value: "a" + family + "b"}, false)
+	end := e.cursorColumn(80)
+	e.apply(key{kind: keyLeft})
+	e.apply(key{kind: keyLeft})
+	if got, want := e.cursorColumn(80), end-1-width(family); got != want {
+		t.Errorf("two steps left: column %d, want %d, in front of the emoji", got, want)
+	}
+	e.apply(key{kind: keyRight})
+	if got, want := e.cursorColumn(80), end-1; got != want {
+		t.Errorf("a step right: column %d, want %d, behind the emoji", got, want)
+	}
+	e.apply(key{kind: keyBackspace})
+	if got, want := e.answer(), "ab"; got != want {
+		t.Errorf("Backspace behind the emoji left %+q, want %q", got, want)
+	}
+	e.apply(key{kind: keyHome})
+	e.apply(key{kind: keyRight})
+
+	for _, c := range []struct {
+		name, value string
+		keys        []key
+		want        string
+	}{
+		{"Backspace takes a flag whole", "x🇩🇪", []key{{kind: keyBackspace}}, "x"},
+		{"Backspace takes a letter with its accent", "cafe\u0301", []key{{kind: keyBackspace}}, "caf"},
+		{"Delete takes a letter with its accent", "e\u0301x", []key{{kind: keyHome}, {kind: keyDelete}}, "x"},
+		{"typing in front of an accented letter keeps the accent on it", "cafe\u0301", []key{{kind: keyLeft}, {kind: keyRune, rune: 'X'}}, "cafXe\u0301"},
+		{"an accent typed joins the letter before it", "cafe", []key{{kind: keyRune, rune: '\u0301'}, {kind: keyLeft}, {kind: keyRune, rune: '-'}}, "caf-e\u0301"},
+		{"a joiner typed between two emoji makes them one", "👨👩", []key{{kind: keyLeft}, {kind: keyRune, rune: '\u200d'}, {kind: keyBackspace}}, ""},
+	} {
+		e := newEditor(InputOptions{Value: c.value}, false)
+		for _, k := range c.keys {
+			e.apply(k)
+		}
+		if got := e.answer(); got != c.want {
+			t.Errorf("%s: answer() = %+q, want %+q", c.name, got, c.want)
+		}
+	}
+}
+
+// A value longer than the line scrolls with the caret, so what is typed is
+// always on screen, with an ellipsis where text is out of sight.
+func TestEditorScrollsALongValue(t *testing.T) {
+	e := newEditor(InputOptions{Prompt: "URL: ", Value: "https://example.com/a/very/long/path"}, false)
+	check := func(step, wantLine string, wantColumn int) {
+		t.Helper()
+		line := e.render(20)[0]
+		if line != wantLine {
+			t.Errorf("%s: render() = %q, want %q", step, line, wantLine)
+		}
+		if width(line) > 20 {
+			t.Errorf("%s: the line is %d cells wide on 20", step, width(line))
+		}
+		if got := e.cursorColumn(20); got != wantColumn {
+			t.Errorf("%s: cursorColumn() = %d, want %d", step, got, wantColumn)
+		}
+	}
+	check("opened", "URL: …ery/long/path", 20)
+	typeText(e, "XYZ")
+	check("typed at the end", "URL: …/long/pathXYZ", 20)
+	for range 5 {
+		e.apply(key{kind: keyLeft})
+	}
+	check("moved inside the window", "URL: …/long/pathXYZ", 15)
+	e.apply(key{kind: keyHome})
+	check("at the start", "URL: https://exampl…", 6)
+	for range 16 {
+		e.apply(key{kind: keyRight})
+	}
+	check("scrolled right", "URL: …ps://example.…", 20)
+	e.apply(key{kind: keyEnd})
+	for range 30 {
+		e.apply(key{kind: keyBackspace})
+	}
+	check("fits again", "URL: https://e", 15)
+
+	// Wide characters scroll by whole characters and never split.
+	e = newEditor(InputOptions{Prompt: "名前: ", Value: "日本語のテキストを入力する"}, false)
+	for n := 1; n <= 40; n++ {
+		for _, k := range []keyKind{keyEnd, keyLeft, keyLeft, keyHome, keyRight} {
+			e.apply(key{kind: k})
+			line := e.render(n)[0]
+			if width(line) > n {
+				t.Fatalf("width %d: %q is %d cells wide", n, line, width(line))
+			}
+			if column := e.cursorColumn(n); column < 1 || column > n {
+				t.Fatalf("width %d: cursor column %d", n, column)
+			}
+		}
+	}
+
+	// A prompt that fills the line makes room for the field.
+	e = newEditor(InputOptions{Prompt: "A rather long question: ", Value: "answer"}, false)
+	check("long prompt", "A rather lon…answer", 20)
+}

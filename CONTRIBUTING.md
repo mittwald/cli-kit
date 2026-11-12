@@ -12,7 +12,7 @@ You need Go 1.27 or newer and [golangci-lint](https://golangci-lint.run) v2.
 ```shell
 git clone https://github.com/mittwald/cli-kit.git
 cd cli-kit
-make check      # vet, lint, race tests, cross-compile, go mod tidy check
+make check      # vet, lint, race tests, locale tests, cross-compile, go mod tidy check
 make test-min   # run the tests on Go 1.27.0, the oldest supported release
 ```
 

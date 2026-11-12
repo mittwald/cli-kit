@@ -22,7 +22,8 @@ const (
 	JSON Format = "json"
 	// YAML is block-style YAML carrying the same view as JSON.
 	YAML Format = "yaml"
-	// CSV is comma-separated records (RFC 4180).
+	// CSV is comma-separated records, quoted as RFC 4180 describes and ended
+	// by a line feed.
 	CSV Format = "csv"
 	// TSV is tab-separated records, never quoted.
 	TSV Format = "tsv"

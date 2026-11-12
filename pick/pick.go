@@ -10,6 +10,12 @@ import (
 
 // Item is one selectable row. Cells are drawn as aligned columns, the first
 // of them naming what the row is.
+//
+// Everything a row draws (Cells, Action, Flag, Detail and Details) is shown
+// as plain single-line text: escape sequences and control characters in it
+// are dropped, and a line break or a tab becomes a space. Rows made from
+// what a server or a repository holds can therefore be handed in as they
+// are. Colors come from CellStyles and Options.PaintCell, not from the text.
 type Item struct {
 	// Cells are the row's columns. The first names the row and carries the
 	// weight; text in parentheses inside it recedes. Later cells qualify the
@@ -111,6 +117,16 @@ type View struct {
 	// are expensive to produce. The list shows Loading in their place, runs
 	// Load once, and keeps what it returns. A failure is shown where the rows
 	// would be, together with whatever rows Load did return.
+	//
+	// Load runs on a goroutine of its own while the list keeps taking keys:
+	// Tab moves on to another view, and Esc or Ctrl-C leaves the list. Load
+	// is not stopped by that. It runs to its end in the background, possibly
+	// after the function that drew the list has returned, and what it returns
+	// is then dropped; a Load that should stop early watches something the
+	// caller cancels. It must not write to the terminal. A panic in Load is
+	// raised again on the goroutine that drew the list. On Windows, where
+	// waiting for a key cannot be interrupted, Load runs before the next key
+	// is read and the list cannot be left until it returns.
 	Load func() ([]Item, error)
 	// Loading is the line shown while Load runs; "" uses a default.
 	Loading string
@@ -134,7 +150,10 @@ func (v View) shows(item Item) bool {
 }
 
 // Lens is how a list was narrowed: what was typed into its filter and the
-// name of the view it was left on.
+// view it was left on. View holds that view's name, or, for a view without
+// one, its position among the views, counted from 1, the way the status line
+// labels it. An empty View names no view: a list opened with it starts on
+// the view Options.View asks for.
 type Lens struct {
 	Filter string
 	View   string
@@ -163,7 +182,9 @@ const (
 	TruncateMiddle
 )
 
-// Options configures one list.
+// Options configures one list. Its texts (Title, Subject, Note, Hint,
+// TypedNote and RangeUnit, and the names and lines of its Views) are shown
+// as plain single-line text, as the rows are (see Item).
 type Options struct {
 	// Title is the question, drawn above the rows. It may hold one %s where
 	// Subject goes.
@@ -183,6 +204,8 @@ type Options struct {
 	View int
 	// Initial is the index of the item the cursor starts on. An item the
 	// filter or view hides, or an index out of range, starts at the first row.
+	// Where the list opens on a view that loads its rows, the cursor goes
+	// there once they have arrived.
 	Initial int
 	// MaxVisible caps how many rows are drawn at once; 0 derives the cap from
 	// the terminal height.
@@ -197,8 +220,10 @@ type Options struct {
 	DismissOnBackspace bool
 	// Typed lets the list take an answer it does not hold: the filter is
 	// offered as a row of its own, after the rows it matches, as long as
-	// Typed accepts it and no row's first cell is exactly that text. Only
-	// SelectOrType and SelectManyOrType honor it.
+	// Typed accepts it and none of the rows shown has exactly that text as
+	// its first cell. A row of that name which the view hides is not on
+	// offer, so the text can be typed all the same. Only SelectOrType and
+	// SelectManyOrType honor it.
 	Typed func(string) bool
 	// TypedNote is what the typed row says about itself, in its second
 	// column.
@@ -215,6 +240,8 @@ type Options struct {
 	// column, and whether the row is under the cursor, and returns the
 	// painted text and true, or false to leave the cell to the default
 	// styles. It is called only when color is on and the row is not receded.
+	// What it returns is drawn as it is, so it adds colors to the text it
+	// was given and nothing else.
 	PaintCell func(column int, text string, selected bool) (string, bool)
 	// DetailStyle is the style of Item.Detail in the title line; the theme's
 	// info style when empty.
@@ -230,6 +257,10 @@ type Options struct {
 	// the range on the row under the cursor, moving extends it, and the
 	// second Enter ends the list. Esc drops an open range before it leaves
 	// the list. Read the range back with SelectRange.
+	//
+	// A range covers every item between its two ends, so every one of them
+	// is on screen while it is open: anchoring clears the filter and sets a
+	// view that narrows the items aside, and Esc brings the view back.
 	Range bool
 	// RangeUnit names what the range covers, in the singular ("commit"), for
 	// the summary in the title line; an "s" is appended for any count but

@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
+	"math/big"
 	"os/exec"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -47,11 +51,11 @@ func sampleEdgeCase() edgeCase {
 	}
 }
 
-// The library quotes every scalar whose plain form would come back as another
-// type — a time, a date, a boolean, a number — and leaves the rest readable.
-// The one case it does not quote is a digit string with a leading zero
-// (0815): goccy/go-yaml and PyYAML both read it back as a string, since it is
-// not valid octal, but a YAML 1.2 core-schema reader would take it for 815.
+// Every scalar whose plain form would come back as another type — a time, a
+// date, a boolean, a number — is quoted, and the rest stays readable. A digit
+// string with a leading zero (0815) is quoted too: it is not valid octal, so
+// YAML 1.1 readers take it for a string, but a YAML 1.2 reader takes it for
+// the number 815.
 func TestYAMLQuotesAmbiguousScalars(t *testing.T) {
 	var out bytes.Buffer
 	if err := WriteYAML(&out, sampleEdgeCase()); err != nil {
@@ -64,7 +68,7 @@ quote: say "hello"
 hash: "#1 issue"
 trail: "trailing  "
 empty: ""
-numlike: 0815
+numlike: "0815"
 datelike: "2026-06-16"
 boolish: "true"
 tilde: "~"
@@ -92,6 +96,255 @@ func TestYAMLQuotesDigitStrings(t *testing.T) {
 	}
 	if got := out.String(); got != "id: \"4711\"\n" {
 		t.Fatalf("digit string not quoted: %q", got)
+	}
+}
+
+// ambiguousScalars are strings some YAML reader takes for something other
+// than a string when they are written plain: YAML 1.1 readers (PyYAML, Ruby)
+// and YAML 1.2 ones (go-yaml, yq, js-yaml) disagree on many of them, so each
+// has to be quoted for all of them to agree.
+var ambiguousScalars = []string{
+	// Decimal integers: signed, with leading zeros (a float for go-yaml,
+	// octal for YAML 1.1), and grouped by underscores or commas.
+	"0", "4711", "+1", "-1", "0815", "08", "09111", "007", "1_000", "1,000", "80,443",
+	// Hexadecimal, octal and binary integers. PyYAML fails on "0x_".
+	"0x1F", "0X1f", "0x_", "0o17", "017", "0b11", "-0b1",
+	// Floats: YAML 1.2 takes an exponent without a dot, YAML 1.1 does not.
+	"1.5", ".5", "1.", "-.5", "+1.5e3", "1e3", "1E5", "12345e7", "0e0", "1e-7", "1.0e+21", "6.02E23",
+	".inf", "-.Inf", "+.INF", ".nan", ".NaN", ".NAN",
+	// Base 60 integers and floats, which YAML 1.1 reads times of day as.
+	"12:30:45", "1:30", "+1:30", "-1:30", "0:00:05", "190:20:30", "1:2:3.5", "1:0.",
+	// Dates and time stamps.
+	"2026-06-16", "2026-6-1", "2026-06-16T10:00:00Z", "2026-06-16 10:00:00",
+	"2026-06-16t10:00:00+02:00", "2026-6-1 9:00",
+	// Booleans and null, the YAML 1.1 spellings included.
+	"true", "True", "TRUE", "false", "False", "FALSE", "yes", "Yes", "YES", "no", "No", "NO",
+	"on", "On", "ON", "off", "Off", "OFF", "y", "Y", "n", "N", "null", "Null", "NULL", "~",
+	// Structure: indicators, comments, and the YAML 1.1 merge and value keys.
+	"?", "? x", "-", "- x", "<<", "=", "", " x", "x ", "x: y", "x:", "x #y", "#x",
+	"[x", "{x", "*x", "&x", "!x", "|", ">", "%x", "@x", "`x", "'x", `"x`,
+}
+
+// plainScalars are strings no reader takes for anything else, which stay
+// readable: versions, addresses and words that only resemble a number.
+var plainScalars = []string{
+	"Ada Lovelace", "0.1.0", "1.2.3", "10.0.0.1", "v1", "1e", "e3", "0x", "0b2", "0o8",
+	".", "..", "+", "x1", "1-2", "1h30m", "abc123e4", "_1", "2026-06", "20:30h",
+	"?x", "-x", "a?b", "first, second", `say "hello"`, "it's", "a/b", "a=b", "<a&b>",
+}
+
+// A string a reader of either YAML version could take for a number, a time,
+// a boolean, null or structure is double-quoted wherever it stands, and
+// reads back as the string it is.
+func TestYAMLQuotesWhatReadersTakeForSomethingElse(t *testing.T) {
+	for _, s := range ambiguousScalars {
+		quoted := strconv.Quote(s)
+		for _, tc := range []struct {
+			place string
+			view  any
+			want  string
+		}{
+			{"value", map[string]string{"v": s}, "v: " + quoted + "\n"},
+			{"item", []string{s}, "  - " + quoted + "\n"},
+			{"key", map[string]int{s: 1}, quoted + ": 1\n"},
+			{"root", s, quoted + "\n"},
+		} {
+			var out bytes.Buffer
+			if err := WriteYAML(&out, tc.view); err != nil {
+				t.Fatalf("WriteYAML(%q as %s) returned error: %v", s, tc.place, err)
+			}
+			if got := out.String(); got != tc.want {
+				t.Errorf("WriteYAML(%q as %s) = %q, want %q", s, tc.place, got, tc.want)
+			}
+		}
+	}
+	var out bytes.Buffer
+	if err := WriteYAML(&out, ambiguousScalars); err != nil {
+		t.Fatalf("WriteYAML returned error: %v", err)
+	}
+	var back []string
+	if err := yaml.Unmarshal(out.Bytes(), &back); err != nil || !reflect.DeepEqual(back, ambiguousScalars) {
+		t.Errorf("the strings read back as %q, %v", back, err)
+	}
+}
+
+// Quoting stops at what a reader could misread: a version, an address or a
+// word with digits in it stays plain.
+func TestYAMLLeavesUnambiguousScalarsPlain(t *testing.T) {
+	for _, s := range plainScalars {
+		var out bytes.Buffer
+		if err := WriteYAML(&out, map[string]string{"v": s}); err != nil {
+			t.Fatalf("WriteYAML(%q) returned error: %v", s, err)
+		}
+		if got, want := out.String(), "v: "+s+"\n"; got != want {
+			t.Errorf("WriteYAML(%q) = %q, want %q", s, got, want)
+		}
+		var back map[string]string
+		if err := yaml.Unmarshal(out.Bytes(), &back); err != nil || back["v"] != s {
+			t.Errorf("WriteYAML(%q) reads back as %q, %v", s, back["v"], err)
+		}
+	}
+}
+
+// A number is written with the digits JSON has and reads back as a number
+// of the same kind: an integer however large, and a float with a dot in its
+// mantissa and a sign in its exponent, which YAML 1.1 needs to see a float.
+func TestYAMLKeepsJSONNumbers(t *testing.T) {
+	for _, tc := range []struct{ json, yaml string }{
+		{"0", "0"},
+		{"-0", "-0"},
+		{"-12", "-12"},
+		{"18446744073709551615", "18446744073709551615"},
+		{"18446744073709551616", "18446744073709551616"},
+		{"-9223372036854775809", "-9223372036854775809"},
+		{"123456789012345678901234567890", "123456789012345678901234567890"},
+		{"0.3", "0.3"},
+		{"2.50", "2.50"},
+		{"1e-7", "1.0e-7"},
+		{"1e+21", "1.0e+21"},
+		{"1E5", "1.0E+5"},
+		{"1.5e3", "1.5e+3"},
+		{"2.5E-10", "2.5E-10"},
+		{
+			"1234567890123456789012345678901234567890.123456789012345678901234567890",
+			"1234567890123456789012345678901234567890.123456789012345678901234567890",
+		},
+	} {
+		var out bytes.Buffer
+		if err := WriteYAML(&out, map[string]json.RawMessage{"v": json.RawMessage(tc.json)}); err != nil {
+			t.Fatalf("WriteYAML(%s) returned error: %v", tc.json, err)
+		}
+		if got, want := out.String(), "v: "+tc.yaml+"\n"; got != want {
+			t.Errorf("WriteYAML(%s) = %q, want %q", tc.json, got, want)
+		}
+	}
+
+	// The same for the numbers encoding/json writes for Go values.
+	huge, _ := new(big.Int).SetString("123456789012345678901234567890", 10)
+	view := struct {
+		Small  float64     `json:"small"`
+		Large  float64     `json:"large"`
+		Whole  float64     `json:"whole"`
+		Max    uint64      `json:"max"`
+		Huge   *big.Int    `json:"huge"`
+		Number json.Number `json:"number"`
+	}{1e-7, 1e21, 1e20, math.MaxUint64, huge, "12345678901234567890.123456789"}
+	var out bytes.Buffer
+	if err := WriteYAML(&out, view); err != nil {
+		t.Fatalf("WriteYAML returned error: %v", err)
+	}
+	want := `small: 1.0e-7
+large: 1.0e+21
+whole: 100000000000000000000
+max: 18446744073709551615
+huge: 123456789012345678901234567890
+number: 12345678901234567890.123456789
+`
+	if got := out.String(); got != want {
+		t.Fatalf("yaml mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+	var back struct {
+		Small, Large float64
+		Max          uint64
+	}
+	if err := yaml.Unmarshal(out.Bytes(), &back); err != nil || back.Small != 1e-7 || back.Large != 1e21 || back.Max != math.MaxUint64 {
+		t.Errorf("the numbers read back as %+v, %v", back, err)
+	}
+}
+
+// repeated is a value whose JSON holds a key twice, which only a custom
+// MarshalJSON can write.
+type repeated struct{}
+
+func (repeated) MarshalJSON() ([]byte, error) {
+	return []byte(`{"a":1,"b":2,"a":{"x":1,"x":2},"c":[{"d":1,"d":null}]}`), nil
+}
+
+// WriteJSON writes an object that repeats a key as it is. WriteYAML, where
+// readers reject a repeated key, writes the key once: in its first place and
+// with its last value, which is how JSON readers take the object.
+func TestYAMLWritesRepeatedKeysOnce(t *testing.T) {
+	var j, y bytes.Buffer
+	if err := WriteJSON(&j, repeated{}); err != nil {
+		t.Fatalf("WriteJSON returned error: %v", err)
+	}
+	if err := WriteYAML(&y, repeated{}); err != nil {
+		t.Fatalf("WriteYAML returned error: %v", err)
+	}
+	if got, want := y.String(), "a:\n  x: 2\nb: 2\nc:\n  - d: null\n"; got != want {
+		t.Fatalf("WriteYAML = %q, want %q", got, want)
+	}
+	var fromJSON, fromYAML map[string]any
+	if err := json.Unmarshal(j.Bytes(), &fromJSON); err != nil {
+		t.Fatalf("re-reading the JSON failed: %v", err)
+	}
+	if err := yaml.Unmarshal(y.Bytes(), &fromYAML); err != nil {
+		t.Fatalf("re-reading the YAML failed: %v", err)
+	}
+	if normalized := viaJSON(t, fromYAML); !reflect.DeepEqual(normalized, fromJSON) {
+		t.Errorf("YAML reads back as %v, JSON as %v", normalized, fromJSON)
+	}
+}
+
+// viaJSON returns v as encoding/json decodes its JSON encoding, so numbers
+// compare whatever type a YAML reader gave them.
+func viaJSON(t *testing.T, v any) any {
+	t.Helper()
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	var decoded any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	return decoded
+}
+
+// A key holding "<<" is quoted, since goccy/go-yaml does not read it plain,
+// and a key longer than the 1024 characters readers allow before the colon
+// is written as an explicit key.
+func TestYAMLWritesKeysEveryReaderTakes(t *testing.T) {
+	long := strings.Repeat("k", 1500)
+	for _, tc := range []struct {
+		name string
+		view any
+		want string
+	}{
+		{"merge", map[string]int{"0<<": 1}, "\"0<<\": 1\n"},
+		{"merge inside", map[string]int{"a<<b": 1}, "\"a<<b\": 1\n"},
+		{"merge alone", map[string]int{"<<": 1}, "\"<<\": 1\n"},
+		{"shift value", map[string]string{"v": "1<<2"}, "v: 1<<2\n"},
+		{"short", map[string]int{strings.Repeat("k", 900): 1}, strings.Repeat("k", 900) + ": 1\n"},
+		{"long", map[string]int{long: 1, "z": 2}, "? " + long + "\n: 1\nz: 2\n"},
+		{"long quoted", map[string]int{long + ": x": 1}, "? \"" + long + ": x\"\n: 1\n"},
+		{
+			"long nested", map[string]any{"a": []any{map[string]any{long: []int{1}, "z": map[string]any{long: "v"}}}},
+			"a:\n  - ? " + long + "\n    :\n      - 1\n    z:\n      ? " + long + "\n      : v\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := WriteYAML(&out, tc.view); err != nil {
+				t.Fatalf("WriteYAML returned error: %v", err)
+			}
+			if got := out.String(); got != tc.want {
+				t.Fatalf("WriteYAML = %q, want %q", got, tc.want)
+			}
+			var back any
+			if err := yaml.Unmarshal(out.Bytes(), &back); err != nil {
+				t.Fatalf("goccy/go-yaml does not read the output: %v", err)
+			}
+			want := viaJSON(t, tc.view)
+			if got := viaJSON(t, back); !reflect.DeepEqual(got, want) {
+				t.Errorf("goccy/go-yaml reads %v, want %v", got, want)
+			}
+			if parse := pythonYAML(); parse != nil {
+				if got, err := parse(out.Bytes()); err != nil || !reflect.DeepEqual(got, want) {
+					t.Errorf("PyYAML reads %v, %v, want %v", got, err, want)
+				}
+			}
+		})
 	}
 }
 
@@ -286,6 +539,14 @@ func FuzzStructuredControls(f *testing.F) {
 	f.Add("plain")
 	f.Add("x\n  y")
 	f.Add("- a\nb: c")
+	for _, s := range ambiguousScalars {
+		f.Add(s)
+	}
+	for _, s := range plainScalars {
+		f.Add(s)
+	}
+	f.Add("0<<")
+	f.Add("line one\n\nline three\n\n")
 	f.Fuzz(func(t *testing.T, s string) {
 		view := map[string]any{"value": s, "list": []string{s, "x"}}
 		if s != "value" && s != "list" {
@@ -382,6 +643,11 @@ func TestYAMLParsesBackToTheJSONView(t *testing.T) {
 		"quirks":   []string{"...", "--- x", "? x", "<<", "=", ".inf", "-.Inf", ".NaN", "\ufeffx", "x\n  ", "\n x"},
 		"keys":     map[string]string{"...": "a", "---": "b", "<<": "c", "\ufeffx": "d", "a\nb": "e", "=": "f"},
 		"root":     "...",
+		"scalars":  ambiguousScalars,
+		"plain":    plainScalars,
+		"numbers":  []any{1e-7, 1e21, 1e20, 2.5e-10, -0.5, uint64(math.MaxUint64), json.Number("123456789012345678901234567890")},
+		"repeated": repeated{},
+		"longkey":  map[string]any{strings.Repeat("k", 1500): []int{1}, "0<<": map[string]string{strings.Repeat("k", 1100) + ": x": "v"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var out bytes.Buffer

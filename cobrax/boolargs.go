@@ -38,8 +38,9 @@ func AllowSpacedBool(flags *pflag.FlagSet, names ...string) {
 // select has a marked flag of that name, its own or inherited: an unmarked
 // flag of the same name on another command keeps its meaning. The next
 // argument must be exactly "true" or "false" (in any case), and nothing
-// after "--" is touched. For a shell completion request the word being
-// completed is left alone.
+// after "--" is touched, nor is the value of another flag: in
+// "--name --stable false" the flag --name is given the value "--stable". For
+// a shell completion request the word being completed is left alone.
 func JoinSpacedBoolValues(root *cobra.Command, args []string) []string {
 	anyMarked := false
 	walk(root, func(cmd *cobra.Command) {
@@ -74,8 +75,42 @@ func JoinSpacedBoolValues(root *cobra.Command, args []string) []string {
 			continue
 		}
 		joined = append(joined, arg)
+		// The value of a flag is never a flag itself: "--name --stable false"
+		// names something "--stable", and joining would rename it.
+		if i >= first && i+1 < len(args) && takesNext(cmd, arg) {
+			i++
+			joined = append(joined, args[i])
+		}
 	}
 	return joined
+}
+
+// takesNext reports whether arg is a flag of cmd that takes the argument
+// after it as its value: "--name" or "-n" of a flag that needs a value, or a
+// group of short flags ending in one ("-vn").
+func takesNext(cmd *cobra.Command, arg string) bool {
+	if strings.Contains(arg, "=") {
+		return false
+	}
+	if name, long := strings.CutPrefix(arg, "--"); long {
+		flag := lookupFlag(cmd, name)
+		return flag != nil && flag.NoOptDefVal == ""
+	}
+	if len(arg) < 2 || arg[0] != '-' {
+		return false
+	}
+	for i := 1; i < len(arg); i++ {
+		flag := lookupShorthand(cmd, arg[i:i+1])
+		if flag == nil {
+			return false
+		}
+		if flag.NoOptDefVal == "" {
+			// The rest of the group is this flag's value, unless the flag
+			// ends the group.
+			return i == len(arg)-1
+		}
+	}
+	return false
 }
 
 // selected returns the command args select, the way cobra's Find walks

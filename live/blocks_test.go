@@ -143,3 +143,53 @@ func TestBlocksWritersUnwrap(t *testing.T) {
 		t.Error("writers do not unwrap to the destination")
 	}
 }
+
+// A write of several lines is painted line by line: the warning among them
+// stands out, and it alone.
+func TestBlocksHighlightEveryLineOnItsOwn(t *testing.T) {
+	var out bytes.Buffer
+	blocks := NewBlocks(&out)
+	blocks.color = true
+	fmt.Fprint(blocks.Detail(), "step 1\nWARNING: no checksum file\nstep 2\n")
+
+	muted := theme.Active().Status
+	want := "\n" + muted.Paint("step 1") + "\nWARNING: no checksum file\n" + muted.Paint("step 2") + "\n"
+	if out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+
+	// The option is asked about each line, without its newline.
+	out.Reset()
+	var asked []string
+	blocks = NewBlocks(&out, WithHighlight(func(line string) bool {
+		asked = append(asked, line)
+		return false
+	}))
+	blocks.color = true
+	fmt.Fprint(blocks.Detail(), "one\ntwo\n")
+	if len(asked) != 2 || asked[0] != "one" || asked[1] != "two" {
+		t.Errorf("highlight asked about %q, want each line on its own", asked)
+	}
+}
+
+// An empty write shows nothing, so it opens no block and closes none.
+func TestBlocksIgnoreEmptyWrites(t *testing.T) {
+	var out bytes.Buffer
+	blocks := NewBlocks(&out)
+	fmt.Fprintln(blocks.Plain(), "start")
+	if n, err := blocks.Detail().Write(nil); n != 0 || err != nil {
+		t.Errorf("empty detail write = %d, %v", n, err)
+	}
+	fmt.Fprintln(blocks.Plain(), "end")
+	if got, want := out.String(), "start\nend\n"; got != want {
+		t.Errorf("output = %q, want %q", got, want)
+	}
+
+	out.Reset()
+	fmt.Fprintln(blocks.Detail(), "step")
+	_, _ = blocks.Plain().Write(nil)
+	fmt.Fprintln(blocks.Detail(), "step")
+	if got, want := out.String(), "\nstep\nstep\n"; got != want {
+		t.Errorf("output = %q, want %q", got, want)
+	}
+}

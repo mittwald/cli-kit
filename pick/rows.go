@@ -172,12 +172,23 @@ func flagged(cell, flag string) string {
 
 // writeFlagged draws a first cell that carries a flag: the name, then the
 // flag in the theme's flag style, then the padding the column wants.
+//
+// In a column too narrow for both, the name comes first: it keeps
+// minColumnWidth cells, or all it needs when that is less, and the flag is
+// shortened to what is left, or left out when nothing is. A row is told
+// apart by its name, and a flag without one says nothing.
 func (l *list) writeFlagged(write func(string, theme.Style), cell, flag string, nameStyle, mutedStyle theme.Style, padded bool, columnWidth int) {
-	name := l.cutCell(cell, 0, columnWidth-width(" "+flag))
+	room := max(columnWidth-width(" "+flag), min(width(cell), minColumnWidth, columnWidth))
+	name := l.cutCell(cell, 0, room)
+	used := width(name)
 	l.writeName(write, name, nameStyle, mutedStyle)
-	write(" ", "")
-	write(flag, l.theme.Flag)
-	if gap := columnWidth - width(flagged(name, flag)); padded && gap > 0 {
+	if left := columnWidth - used - 1; left > 0 {
+		mark := cut(flag, left)
+		write(" ", "")
+		write(mark, l.theme.Flag)
+		used += 1 + width(mark)
+	}
+	if gap := columnWidth - used; padded && gap > 0 {
 		write(strings.Repeat(" ", gap), "")
 	}
 }

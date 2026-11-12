@@ -180,6 +180,263 @@ func TestUIDSanitized(t *testing.T) {
 	mustContain(t, got, "UID:abcd\r\n")
 }
 
+// A UID is a TEXT value: a reader unescapes it, so a backslash, a semicolon
+// and a comma are escaped for it to get back the UID that was given. White
+// space goes whatever its kind: here a no-break space, an em space and an
+// ideographic space.
+func TestUIDIsEscapedAsText(t *testing.T) {
+	const uid = "a\\nb;c,d\xc2\xa0e\xe2\x80\x83f\xe3\x80\x80g@example.com"
+	got := render(t, Calendar{Events: []Event{{UID: uid, Start: testStamp}}})
+	want := `UID:a\\nb\;c\,defg@example.com`
+	if lines := eventLines(t, got); lines[0] != want {
+		t.Errorf("UID line = %q, want %q", lines[0], want)
+	}
+	// Unescaped as a reader does it, the UID is the one given, less its
+	// white space.
+	unescaped := strings.NewReplacer(`\\`, `\`, `\;`, ";", `\,`, ",", `\n`, "\n").Replace(strings.TrimPrefix(want, "UID:"))
+	if unescaped != `a\nb;c,defg@example.com` {
+		t.Errorf("the UID reads back as %q", unescaped)
+	}
+}
+
+// What is written without TEXT escaping cannot break out of its line: the
+// words RFC 5545 defines lose every control character, and so does the value
+// of a property the caller built.
+func TestValuesCannotStartALine(t *testing.T) {
+	got := render(t, Calendar{
+		Method: " publish\r\nX-EVIL-METHOD:1\x1b[2J",
+		Scale:  "gregorian\nX-EVIL-SCALE:1",
+		Props:  []Property{{Name: "X-RAW", Value: "a\r\nX-EVIL-PROP:1\x00\x7f\tb"}},
+		Events: []Event{{
+			UID:    "x",
+			Start:  testStamp,
+			Status: "confirmed\r\nATTENDEE:mailto:evil@example.com",
+			Class:  "\tpublic\nX-EVIL-CLASS:1\x1b[2J\xc2\x9b2J ",
+			Props: []Property{
+				{Name: "ATTACH", Params: []Param{{Name: "FMTTYPE", Value: "text/plain"}}, Value: "https://example.com/a\rb\nEND:VEVENT"},
+			},
+		}},
+	})
+	checkPhysicalLines(t, got)
+	mustContain(t, got,
+		"METHOD:PUBLISHX-EVIL-METHOD:1[2J\r\n",
+		"CALSCALE:GREGORIANX-EVIL-SCALE:1\r\n",
+		// A tab is allowed in a value and stays.
+		"X-RAW:aX-EVIL-PROP:1\tb\r\n",
+		"STATUS:CONFIRMEDATTENDEE:MAILTO:EVIL@EXAMPLE.COM\r\n",
+		"CLASS:PUBLICX-EVIL-CLASS:1[2J2J\r\n",
+		"ATTACH;FMTTYPE=text/plain:https://example.com/abEND:VEVENT\r\n",
+	)
+	if r, ok := controlOtherThan(got, "\r\n\t"); ok {
+		t.Errorf("the calendar holds the control character %U:\n%q", r, got)
+	}
+	ends := 0
+	for line := range strings.SplitSeq(got, "\r\n") {
+		if strings.HasPrefix(line, "X-EVIL") || strings.HasPrefix(line, "ATTENDEE") {
+			t.Errorf("a value started a content line: %q", line)
+		}
+		if line == "END:VEVENT" {
+			ends++
+		}
+	}
+	if ends != 1 {
+		t.Errorf("a value ended the event:\n%s", got)
+	}
+
+	// A word that is nothing but control characters is left out, or falls
+	// back to the default, like an empty one.
+	got = render(t, Calendar{Method: "\r\n", Events: []Event{{UID: "x", Start: testStamp, Status: "\n", Class: "\x1b"}}})
+	mustContain(t, got, "METHOD:PUBLISH\r\n")
+	if strings.Contains(got, "STATUS") || strings.Contains(got, "CLASS") {
+		t.Errorf("an empty STATUS or CLASS was written:\n%s", got)
+	}
+}
+
+// controlOtherThan returns the first control character in s (C0, DEL or C1)
+// that is not one of allowed, and whether there is one.
+func controlOtherThan(s, allowed string) (rune, bool) {
+	for _, r := range s {
+		if (r < 0x20 || (r >= 0x7f && r <= 0x9f)) && !strings.ContainsRune(allowed, r) {
+			return r, true
+		}
+	}
+	return 0, false
+}
+
+// A name that is not made of letters, digits and hyphens would be read as
+// part of the line around it, so the calendar is not written at all.
+func TestInvalidNames(t *testing.T) {
+	event := func(p Property) Calendar {
+		return Calendar{ProdID: "-//x//y//EN", Events: []Event{{UID: "x", Start: testStamp, Summary: "Named", Props: []Property{p}}}}
+	}
+	for _, tc := range []struct {
+		name     string
+		calendar Calendar
+		want     string // the error message
+	}{
+		{
+			"line break in a property name",
+			event(Property{Name: "X-A\r\nX-B", Value: "v"}),
+			`event 0 ("Named"): property "X-A\r\nX-B": ics: invalid property or parameter name`,
+		},
+		{
+			"colon in a property name",
+			event(Property{Name: "X-A:b", Value: "v"}),
+			`event 0 ("Named"): property "X-A:b": ics: invalid property or parameter name`,
+		},
+		{
+			"empty property name",
+			event(Property{Value: "v"}),
+			`event 0 ("Named"): property "": ics: invalid property or parameter name`,
+		},
+		{
+			"space in a property name",
+			event(TextProperty("X NOTE", "v")),
+			`event 0 ("Named"): property "X NOTE": ics: invalid property or parameter name`,
+		},
+		{
+			"semicolon in a parameter name",
+			event(Property{Name: "ATTENDEE", Params: []Param{{Name: "CN", Value: "a"}, {Name: "ROLE;X", Value: "b"}}, Value: "mailto:a@example.com"}),
+			`event 0 ("Named"): property "ATTENDEE": parameter "ROLE;X": ics: invalid property or parameter name`,
+		},
+		{
+			"empty parameter name",
+			event(Property{Name: "ATTENDEE", Params: []Param{{Value: "b"}}, Value: "mailto:a@example.com"}),
+			`event 0 ("Named"): property "ATTENDEE": parameter "": ics: invalid property or parameter name`,
+		},
+		{
+			"calendar property",
+			Calendar{ProdID: "-//x//y//EN", Props: []Property{{Name: "X-WR=CALDESC", Value: "v"}}},
+			`calendar property "X-WR=CALDESC": ics: invalid property or parameter name`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			n, err := tc.calendar.WriteTo(&out)
+			if !errors.Is(err, ErrInvalidName) || err.Error() != tc.want {
+				t.Errorf("err = %v, want %s", err, tc.want)
+			}
+			if n != 0 || out.Len() != 0 {
+				t.Errorf("a calendar with an invalid name wrote %d bytes: %q", n, out.String())
+			}
+		})
+	}
+
+	// Names are letters, digits and hyphens in either case, and are written
+	// in upper case.
+	got := render(t, Calendar{
+		Props:  []Property{{Name: "x-wr-caldesc", Value: "Team"}},
+		Events: []Event{{UID: "x", Start: testStamp, Props: []Property{{Name: "X-Room-2", Params: []Param{{Name: "x-floor", Value: "3"}}, Value: "Blue"}}}},
+	})
+	mustContain(t, got, "X-WR-CALDESC:Team\r\n", "X-ROOM-2;X-FLOOR=3:Blue\r\n")
+
+	// String is one line whatever the names hold.
+	line := Property{Name: "X-A\r\nX-B", Params: []Param{{Name: "P\nQ", Value: "v"}}, Value: "a\r\nb"}.String()
+	if line != "X-AX-B;PQ=v:ab" {
+		t.Errorf("String() = %q", line)
+	}
+}
+
+// An event needs a start, and an end that is set has to come after it.
+// Nothing is written for a calendar with an event that has neither.
+func TestStartAndEndAreChecked(t *testing.T) {
+	day := time.Date(2026, 12, 24, 0, 0, 0, 0, time.UTC)
+	west := time.FixedZone("UTC-5", -5*60*60)
+	for _, tc := range []struct {
+		name  string
+		zone  *time.Location
+		event Event
+		want  error // nil when the event is written
+	}{
+		{"timed without start", nil, Event{}, ErrMissingStart},
+		{"all-day without start", nil, Event{AllDay: true}, ErrMissingStart},
+		{"end without start", nil, Event{End: day}, ErrMissingStart},
+		{"timed end before start", nil, Event{Start: day, End: day.Add(-time.Second)}, ErrEndBeforeStart},
+		{"timed end at start", nil, Event{Start: day, End: day}, nil},
+		{"timed end after start", nil, Event{Start: day, End: day.Add(time.Second)}, nil},
+		{"all-day end on the start date", nil, Event{AllDay: true, Start: day, End: day.Add(23 * time.Hour)}, ErrEndBeforeStart},
+		{"all-day inclusive end", nil, Event{AllDay: true, Start: day, End: day}, ErrEndBeforeStart},
+		{"all-day end before start", nil, Event{AllDay: true, Start: day, End: day.AddDate(0, 0, -2)}, ErrEndBeforeStart},
+		{"all-day end on the next date", nil, Event{AllDay: true, Start: day, End: day.AddDate(0, 0, 1)}, nil},
+		// The dates are the ones written, in the calendar's zone: there the
+		// start falls on 23 December and an end five hours later on the 24th.
+		{"all-day dates in the zone", west, Event{AllDay: true, Start: day, End: day.Add(5 * time.Hour)}, nil},
+		{"all-day same date in the zone", west, Event{AllDay: true, Start: day, End: day.Add(4 * time.Hour)}, ErrEndBeforeStart},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.event.UID = "x"
+			tc.event.Summary = "Checked"
+			var out bytes.Buffer
+			n, err := Calendar{ProdID: "-//x//y//EN", Stamp: testStamp, TimeZone: tc.zone, Events: []Event{
+				{UID: "fine", Start: day}, tc.event,
+			}}.WriteTo(&out)
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("err = %v, want the event written", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) || !strings.HasPrefix(err.Error(), `event 1 ("Checked"): `) {
+				t.Errorf("err = %v, want event 1 and %v", err, tc.want)
+			}
+			if n != 0 || out.Len() != 0 {
+				t.Errorf("an incomplete calendar wrote %d bytes: %q", n, out.String())
+			}
+		})
+	}
+
+	// A zero End is not an end before the start: MissingEnd says what is
+	// written for it, the zero time itself with EndAsGiven.
+	for _, mode := range []EndMode{EndDefault, EndOmit, EndDerive, EndAsGiven} {
+		for _, allDay := range []bool{false, true} {
+			_, err := Calendar{ProdID: "-//x//y//EN", MissingEnd: mode, Events: []Event{{UID: "x", Start: day, AllDay: allDay}}}.Marshal()
+			if err != nil {
+				t.Errorf("mode %d, all-day %v: err = %v", mode, allDay, err)
+			}
+		}
+	}
+}
+
+// X-WR-TIMEZONE names a zone of the IANA database or is left out: "Local"
+// and the names of fixed zones mean nothing to a client.
+func TestTimeZoneName(t *testing.T) {
+	day := time.Date(2026, 12, 24, 0, 0, 0, 0, time.UTC)
+	west := time.FixedZone("UTC-5", -5*60*60)
+	for _, tc := range []struct {
+		name string
+		zone *time.Location
+		want string // the X-WR-TIMEZONE line; empty when there is none
+	}{
+		{"none", nil, ""},
+		{"UTC", time.UTC, "X-WR-TIMEZONE:UTC"},
+		{"local", time.Local, ""},
+		{"fixed", west, ""},
+		{"fixed with an abbreviation", time.FixedZone("CEST", 2*60*60), ""},
+		{"fixed without a name", time.FixedZone("", 60*60), ""},
+		{"fixed with a path", time.FixedZone("../etc/passwd", 0), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := render(t, Calendar{TimeZone: tc.zone, Events: []Event{{UID: "x", Start: day, AllDay: true}}})
+			var lines []string
+			for line := range strings.SplitSeq(got, "\r\n") {
+				if strings.HasPrefix(line, "X-WR-TIMEZONE") {
+					lines = append(lines, line)
+				}
+			}
+			switch {
+			case tc.want == "" && len(lines) > 0:
+				t.Errorf("X-WR-TIMEZONE written: %q", lines)
+			case tc.want != "" && !slices.Equal(lines, []string{tc.want}):
+				t.Errorf("X-WR-TIMEZONE = %q, want %q", lines, tc.want)
+			}
+		})
+	}
+
+	// A zone without a name clients know still decides the dates.
+	got := render(t, Calendar{TimeZone: west, Events: []Event{{UID: "x", Start: day, AllDay: true}}})
+	mustContain(t, got, "DTSTART;VALUE=DATE:20261223\r\n", "DTEND;VALUE=DATE:20261224\r\n")
+}
+
 func TestEscapeTextDropsControls(t *testing.T) {
 	if got, want := EscapeText("a\x00b\x1bc\x7fd\te\r\nf"), "abcd\te\\nf"; got != want {
 		t.Errorf("EscapeText = %q, want %q", got, want)
@@ -265,10 +522,33 @@ func TestWrittenLinesAreFolded(t *testing.T) {
 }
 
 func TestOccurrenceUID(t *testing.T) {
-	first := OccurrenceUID("SERIES 1", time.Date(2026, 5, 29, 10, 0, 0, 0, time.FixedZone("CEST", 7200)))
+	start := time.Date(2026, 5, 29, 10, 0, 0, 0, time.FixedZone("CEST", 7200))
+	first := OccurrenceUID("SERIES 1", start)
 	second := OccurrenceUID("SERIES 1", time.Date(2026, 5, 30, 8, 0, 0, 0, time.UTC))
-	if first != "SERIES1-20260529T080000Z" || second != "SERIES1-20260530T080000Z" {
+	if first != "SERIES 1-20260529T080000Z" || second != "SERIES 1-20260530T080000Z" {
 		t.Errorf("OccurrenceUID = %q, %q", first, second)
+	}
+
+	// The calendar decides what is written, as for any other UID: white
+	// space goes by default and stays with VerbatimUIDs.
+	got := render(t, Calendar{Events: []Event{{UID: first, Start: start}}})
+	mustContain(t, got, "UID:SERIES1-20260529T080000Z\r\n")
+	got = render(t, Calendar{VerbatimUIDs: true, Events: []Event{{UID: first, Start: start}}})
+	mustContain(t, got, "UID:SERIES 1-20260529T080000Z\r\n")
+
+	// A series without a UID gives occurrences without one, so the missing
+	// UID is still reported.
+	for _, blank := range []string{"", " \t", "\r\n\x00", "\xc2\xa0"} {
+		uid := OccurrenceUID(blank, start)
+		if uid != "" {
+			t.Errorf("OccurrenceUID(%q) = %q, want it empty", blank, uid)
+		}
+		for _, verbatim := range []bool{false, true} {
+			_, err := Calendar{ProdID: "-//x//y//EN", VerbatimUIDs: verbatim, Events: []Event{{UID: uid, Start: start}}}.Marshal()
+			if !errors.Is(err, ErrMissingUID) {
+				t.Errorf("UID %q, verbatim %v: err = %v, want ErrMissingUID", blank, verbatim, err)
+			}
+		}
 	}
 }
 
@@ -553,13 +833,14 @@ func TestVerbatimUIDs(t *testing.T) {
 	const uid = " a\tb\u00a0c d;e,f\\g\r\n\x00h\x7fi\u0085j "
 	got := render(t, Calendar{VerbatimUIDs: true, Events: []Event{{UID: uid, Start: testStamp}}})
 	// Spaces, tab and no-break space stay, and so do the characters TEXT
-	// would escape, as in the default; the control characters RFC 5545
-	// forbids go, and a C1 control, which it allows, stays.
+	// would escape; the control characters RFC 5545 forbids go, and a C1
+	// control, which it allows, stays.
 	mustContain(t, got, "UID: a\tb\u00a0c d;e,f\\ghi\u0085j \r\n")
 
-	// By default the C1 control goes as well.
+	// By default the C1 control and all white space go as well, the no-break
+	// space included, and the UID is escaped as TEXT.
 	got = render(t, Calendar{Events: []Event{{UID: uid, Start: testStamp}}})
-	mustContain(t, got, "UID:ab\u00a0cd;e,f\\ghij\r\n")
+	mustContain(t, got, "UID:abcd\\;e\\,f\\\\ghij\r\n")
 
 	// Invalid UTF-8 is repaired as in TEXT values: one U+FFFD per run.
 	got = render(t, Calendar{VerbatimUIDs: true, Events: []Event{{UID: "a\xff\xfeb", Start: testStamp}}})

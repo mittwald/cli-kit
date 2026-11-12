@@ -2,6 +2,9 @@ package table
 
 import (
 	"bytes"
+	"encoding/csv"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -98,14 +101,15 @@ var untrustedRow = []string{
 }
 
 // A record carries no control character but the separators and line ends of
-// its format, whatever its cells held.
+// its format, whatever its cells held. The header record is as long as the
+// row, which has two cells more.
 func TestRecordsCarryNoControlCharacters(t *testing.T) {
 	for _, tc := range []struct {
 		delimiter rune
 		want      string
 	}{
-		{',', "Name,Note\nAda Lovelace,ok,pay the attacker; pay your bank,a bc\ufffd\n"},
-		{'\t', "Name\tNote\nAda Lovelace\tok\tpay the attacker; pay your bank\ta bc\ufffd\n"},
+		{',', "Name,Note,,\nAda Lovelace,ok,pay the attacker; pay your bank,a bc\ufffd\n"},
+		{'\t', "Name\tNote\t\t\nAda Lovelace\tok\tpay the attacker; pay your bank\ta bc\ufffd\n"},
 	} {
 		got := renderRecords(t, tc.delimiter, []string{"Name\u0085", "No\x1b[31mte"}, untrustedRow)
 		if got != tc.want {
@@ -116,5 +120,153 @@ func TestRecordsCarryNoControlCharacters(t *testing.T) {
 				t.Errorf("record carries %U: %q", r, got)
 			}
 		}
+	}
+}
+
+// Rows may be shorter or longer than the header and than each other. Every
+// record still has the same number of fields, the missing ones empty, so a
+// reader that insists on that, as encoding/csv does, takes the output.
+func TestRecordsHaveTheSameNumberOfFields(t *testing.T) {
+	headers := []string{"A", "B", "C"}
+	rows := [][]string{{"1"}, {"1", "2", "3", "4"}, {}, {""}, {"", "", "", "x"}}
+	want := [][]string{
+		{"A", "B", "C", ""},
+		{"1", "", "", ""},
+		{"1", "2", "3", "4"},
+		{"", "", "", ""},
+		{"", "", "", ""},
+		{"", "", "", "x"},
+	}
+
+	got := renderRecords(t, ',', headers, rows...)
+	if text := "A,B,C,\n1,,,\n1,2,3,4\n,,,\n,,,\n,,,x\n"; got != text {
+		t.Errorf("csv mismatch\nwant:\n%q\ngot:\n%q", text, got)
+	}
+	records, err := csv.NewReader(strings.NewReader(got)).ReadAll()
+	if err != nil || !reflect.DeepEqual(records, want) {
+		t.Errorf("encoding/csv reads %q, %v, want %q", records, err, want)
+	}
+
+	got = renderRecords(t, '\t', headers, rows...)
+	if text := "A\tB\tC\t\n1\t\t\t\n1\t2\t3\t4\n\t\t\t\n\t\t\t\n\t\t\tx\n"; got != text {
+		t.Errorf("tsv mismatch\nwant:\n%q\ngot:\n%q", text, got)
+	}
+	for i, line := range lines(got) {
+		if fields := strings.Split(line, "\t"); !reflect.DeepEqual(fields, want[i]) {
+			t.Errorf("tsv record %d = %q, want %q", i, fields, want[i])
+		}
+	}
+}
+
+// A record of one empty field would be an empty line, which readers of CSV
+// skip, so the row would be gone. It is written as a quoted empty field.
+func TestCSVKeepsEmptyRecords(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headers []string
+		rows    [][]string
+		text    string
+		want    [][]string
+	}{
+		{"rows without cells", nil, [][]string{{}, {}}, "\"\"\n\"\"\n", [][]string{{""}, {""}}},
+		{"rows of one empty cell", nil, [][]string{{""}, {"x"}, {""}}, "\"\"\nx\n\"\"\n", [][]string{{""}, {"x"}, {""}}},
+		{"under a header", []string{"Note"}, [][]string{{"a"}, {}, {"b"}}, "Note\na\n\"\"\nb\n", [][]string{{"Note"}, {"a"}, {""}, {"b"}}},
+		{"empty header", []string{""}, [][]string{{"a"}}, "\"\"\na\n", [][]string{{""}, {"a"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renderRecords(t, ',', tc.headers, tc.rows...)
+			if got != tc.text {
+				t.Errorf("csv = %q, want %q", got, tc.text)
+			}
+			records, err := csv.NewReader(strings.NewReader(got)).ReadAll()
+			if err != nil || !reflect.DeepEqual(records, tc.want) {
+				t.Errorf("encoding/csv reads %q, %v, want %q", records, err, tc.want)
+			}
+		})
+	}
+
+	// TSV has no quotes: there the record is the empty line.
+	if got := renderRecords(t, '\t', []string{"Note"}, []string{"a"}, []string{}, []string{"b"}); got != "Note\na\n\nb\n" {
+		t.Errorf("tsv = %q", got)
+	}
+
+	// A table without headers and rows still writes nothing.
+	if got := renderRecords(t, ',', nil); got != "" {
+		t.Errorf("an empty table wrote %q", got)
+	}
+}
+
+// A failing writer is reported whichever way a record is written.
+func TestCSVReportsWriteErrors(t *testing.T) {
+	for _, rows := range [][][]string{{{"a"}}, {{""}}, {{"a"}, {""}, {"b"}}} {
+		tbl := New(failingWriter{}, nil, WithDelimiter(','))
+		for _, row := range rows {
+			tbl.Append(row...)
+		}
+		if err := tbl.Render(); err == nil {
+			t.Errorf("rows %q: the write error was lost", rows)
+		}
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errWrite }
+
+var errWrite = errors.New("write failed")
+
+// Record output is written as it is by default: a spreadsheet takes a cell
+// that starts with "=" for a formula. EscapeFormulas puts a single quote in
+// front of such cells, header cells included, and leaves the others alone.
+func TestEscapeFormulas(t *testing.T) {
+	headers := []string{"=Name", "Note"}
+	rows := [][]string{
+		{"=1+1", "+cmd|' /C calc'!A0"},
+		{"-2+3", "@SUM(A1)"},
+		{"\t=1+1", "\r=1+1"},
+		{"\tplain", "  =1+1"},
+		{"\x1b[31m=1+1\x1b[0m", "a\n=b"},
+		// No formulas: signed numbers, and a sign that is not at the start.
+		{"-12.5", "+1,000"},
+		{"a=b", "x - y"},
+		{"", "-"},
+	}
+	want := [][]string{
+		{"'=Name", "Note"},
+		{"'=1+1", "'+cmd|' /C calc'!A0"},
+		{"'-2+3", "'@SUM(A1)"},
+		{"' =1+1", "'; =1+1"},
+		{"' plain", "'  =1+1"},
+		{"'=1+1", "a; =b"},
+		{"-12.5", "+1,000"},
+		{"a=b", "x - y"},
+		{"", "'-"},
+	}
+	for _, delimiter := range []rune{',', '\t'} {
+		tbl := New(&bytes.Buffer{}, headers, WithDelimiter(delimiter), EscapeFormulas())
+		for _, row := range rows {
+			tbl.Append(row...)
+		}
+		reader := csv.NewReader(strings.NewReader(render(t, tbl)))
+		reader.Comma = delimiter
+		reader.LazyQuotes = true
+		records, err := reader.ReadAll()
+		if err != nil || !reflect.DeepEqual(records, want) {
+			t.Errorf("with %q: records %q, %v, want %q", delimiter, records, err, want)
+		}
+	}
+
+	// Without the option nothing is prefixed.
+	tbl := New(&bytes.Buffer{}, headers, WithDelimiter(','))
+	tbl.Append("=1+1", "@SUM(A1)")
+	if got, want := render(t, tbl), "=Name,Note\n=1+1,@SUM(A1)\n"; got != want {
+		t.Errorf("csv = %q, want %q", got, want)
+	}
+
+	// A drawn table shows its cells as they are.
+	tbl = New(&bytes.Buffer{}, nil, EscapeFormulas())
+	tbl.Append("=1+1")
+	if got := render(t, tbl); got != "=1+1\n" {
+		t.Errorf("drawn table = %q", got)
 	}
 }

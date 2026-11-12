@@ -5,10 +5,6 @@ import (
 	"unicode/utf8"
 )
 
-// tabStop is how far apart the tab stops are that [Sanitize] expands tabs
-// to, a terminal's default.
-const tabStop = 8
-
 // Sanitize makes text from elsewhere — a CI job's log, a remote command's
 // output, a message somebody wrote — safe to write to a terminal. Escape
 // sequences in such text can do more than color it: move the cursor over
@@ -18,12 +14,25 @@ const tabStop = 8
 //
 //   - SGR sequences are kept, with only the attributes that change how text
 //     looks and leave it readable: bold, dim, italic, underline, blink,
-//     reverse, strikethrough, overline, foreground and background colors
-//     (16-color, 256-color and 24-bit) and underline colors (256-color and
-//     24-bit). Concealed text, fonts, frames and the like are dropped, and a
-//     sequence left with nothing is removed.
+//     reverse, strikethrough, overline, and foreground and background colors
+//     from the 16 and the 256 colors. Concealed text, fonts, frames and the
+//     like are dropped, and a sequence left with nothing is removed.
+//   - A 24-bit color (38;2;r;g;b or 48;2;r;g;b) becomes the nearest of the
+//     256 colors (38;5;n or 48;5;n), and an underline color (58 with its
+//     components, and 59, which ends it) is dropped. A terminal that does
+//     not know these forms, GNU screen 4 for one, reads each of their
+//     numbers as an attribute of its own: 38;2;8;7;0 conceals the text,
+//     reverses it and resets everything, and 58;5;8 blinks and conceals. A
+//     color could so carry any attribute that is dropped here. The 256-color
+//     forms stay as they are: nearly every terminal reads them whole.
 //   - Every other escape sequence is removed, and so is every control
 //     character but the newline: the C0 and C1 controls and DEL.
+//   - An escape string (OSC, DCS, SOS, PM or APC, such as a window title or
+//     a clipboard write) goes with its payload up to its terminator, BEL or
+//     ESC \, also when that is lines further on, as a terminal reads it. One
+//     that no terminator ends anywhere in the text goes up to the end of its
+//     line only: text that was cut off inside a sequence, or that starts one
+//     to make the rest disappear, does not take the lines after it along.
 //   - The 8-bit forms of escape sequences, which start with a C1 control
 //     instead of ESC, are removed with what belongs to them, so a clipboard
 //     write such as U+009D 52;c;… BEL does not leave its payload behind as
@@ -38,11 +47,14 @@ const tabStop = 8
 //     (U+009E for ž), and the rest of such a text must not be taken for the
 //     payload of a sequence.
 //   - A tab becomes the spaces up to the next tab stop, every 8 columns.
-//   - A carriage return ends what came before it on its line, the way a
-//     progress meter that redraws its line leaves only its last state on
-//     screen: only the text after the line's last one is kept, in the colors
-//     the text before it set. Carriage returns ending a line, as in CRLF,
-//     are dropped.
+//   - A carriage return ends what came before it on its line once text
+//     follows it, the way a progress meter that redraws its line leaves only
+//     its last state on screen: only the text after the line's last such
+//     return is kept, in the colors the text before it set. A carriage
+//     return that nothing but escape sequences follows on its line draws
+//     over nothing and is dropped: the one of a CRLF line ending, also when
+//     a color is reset between the two, as git diff --color writes the
+//     added lines of a file with CRLF line endings.
 //   - Bytes that are not valid UTF-8 become U+FFFD.
 //
 // Newlines are kept, so a color carries from one line into the next as the
@@ -140,34 +152,72 @@ func bidiControl(r rune) bool {
 
 // dropStrings removes the escape strings of s (OSC, DCS, SOS, PM and APC,
 // such as a clipboard write), which run to their terminator across newlines,
-// or to the end of s without one, as a terminal reads them. Splitting s into
-// lines first would leave the rest of such a string behind as text.
+// as a terminal reads them. Splitting s into lines first would leave the
+// rest of such a string behind as text. A string without a terminator goes
+// up to the end of its line, so it cannot take the rest of s with it.
 func dropStrings(s string) string {
 	if !strings.Contains(s, "\x1b") {
 		return s
 	}
 	var b strings.Builder
+	// unterminated is set once a string found no terminator up to the end
+	// of s: none of the strings after it can find one either, and looking
+	// again for each would make a text full of them quadratic.
+	unterminated := false
 	for i := 0; i < len(s); {
-		if s[i] == 0x1b && i+1 < len(s) && strings.IndexByte("]PX^_", s[i+1]) >= 0 {
-			i += EscapeLen(s[i:])
+		if s[i] != 0x1b || i+1 == len(s) || strings.IndexByte("]PX^_", s[i+1]) < 0 {
+			b.WriteByte(s[i])
+			i++
 			continue
 		}
-		b.WriteByte(s[i])
-		i++
+		n := 0
+		if !unterminated {
+			n = stringLen(s[i:])
+			unterminated = n == 0
+		}
+		if n == 0 {
+			n = len(s) - i
+			if j := strings.IndexByte(s[i:], '\n'); j >= 0 {
+				n = j
+			}
+		}
+		i += n
 	}
 	return b.String()
+}
+
+// stringLen returns the length of the escape string s starts with, ESC and
+// one of ] P X ^ _, up to and with its terminator, BEL or ESC \. It returns
+// 0 when no terminator follows.
+func stringLen(s string) int {
+	for i := 2; i < len(s); i++ {
+		switch {
+		case s[i] == 0x07:
+			return i + 1
+		case s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\':
+			return i + 2
+		}
+	}
+	return 0
 }
 
 // sanitizeLine is Sanitize for one line, without its newline.
 func sanitizeLine(line string) string {
 	line = strings.TrimRight(line, "\r")
 	var (
-		// b holds the text since the last carriage return.
+		// b holds the text since the last carriage return that text followed.
 		b strings.Builder
 		// set is what the line's SGR sequences have changed so far, and
-		// overwritten what they had changed by the last carriage return.
+		// overwritten what they had changed by the last carriage return that
+		// text followed.
 		set         = rendition{relative: true}
 		overwritten string
+		// returned is set after a carriage return until text follows it:
+		// only then is what stood before it drawn over. mark is how much of b
+		// stood before it, and returnedSet what the sequences had changed.
+		returned    bool
+		mark        int
+		returnedSet string
 		// column is the width of b up to segment, the text since the last
 		// tab, which is measured only when the next tab needs it: a tab ends
 		// any grapheme cluster, and measuring b again for every tab would make
@@ -188,11 +238,11 @@ func sanitizeLine(line string) string {
 			if !ok {
 				continue
 			}
-			kept, dropped := parseSGR(params)
+			kept, changed := parseSGR(params)
 			if len(kept) == 0 {
 				continue
 			}
-			if dropped {
+			if changed {
 				texts := make([]string, len(kept))
 				for j, param := range kept {
 					texts[j] = param.text
@@ -205,12 +255,20 @@ func sanitizeLine(line string) string {
 		}
 		r, size := utf8.DecodeRuneInString(line[i:])
 		i += size
-		switch {
-		case r == '\r':
+		if returned && (r == '\t' || !control(r)) {
+			// Text after a carriage return draws over the line: what stood
+			// before the return goes, the sequences since stay.
+			since := b.String()[mark:]
 			b.Reset()
-			overwritten = set.sequence()
+			b.WriteString(since)
+			overwritten = returnedSet
 			column = 0
 			segment.Reset()
+			returned = false
+		}
+		switch {
+		case r == '\r':
+			returned, mark, returnedSet = true, b.Len(), set.sequence()
 		case r == c1CSI:
 			i += csiTail(line[i:])
 		case c1String(r):
@@ -222,7 +280,7 @@ func sanitizeLine(line string) string {
 		case r == '\t':
 			// Columns count grapheme clusters as a terminal draws them, so a
 			// joined emoji such as 👩‍💻 is two cells, not one per rune.
-			column += VisibleWidth(segment.String())
+			column += cells(segment.String())
 			segment.Reset()
 			spaces := tabStop - column%tabStop
 			b.WriteString(strings.Repeat(" ", spaces))

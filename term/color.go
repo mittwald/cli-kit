@@ -16,7 +16,9 @@ const (
 	// ColorAuto paints output written to a terminal and leaves everything
 	// else plain. It honors NO_COLOR and TERM=dumb. It is the default.
 	ColorAuto ColorMode = iota
-	// ColorAlways paints output wherever it goes, even into a pipe.
+	// ColorAlways paints output wherever it goes, even into a pipe. The one
+	// exception is a Windows console that cannot be made to read escape
+	// sequences, where they would show as text.
 	ColorAlways
 	// ColorNever never paints output.
 	ColorNever
@@ -70,8 +72,10 @@ func SetColorMode(m ColorMode) {
 func CurrentColorMode() ColorMode { return ColorMode(colorMode.Load()) }
 
 // ColorAllowed reports whether the environment permits color: NO_COLOR is
-// unset (any value, even empty, turns color off, see https://no-color.org)
-// and TERM is not "dumb".
+// unset and TERM is not "dumb". Any value of NO_COLOR, even an empty one,
+// disables color. That is stricter than https://no-color.org, which lets an
+// empty NO_COLOR stand for no setting at all, and it is deliberate: whoever
+// sets the variable wants no color, however it came to be empty.
 func ColorAllowed() bool {
 	if _, set := os.LookupEnv("NO_COLOR"); set {
 		return false
@@ -82,14 +86,20 @@ func ColorAllowed() bool {
 // ShouldColor reports whether output written to w is painted under mode m:
 // always under [ColorAlways], never under [ColorNever], and under
 // [ColorAuto] only when w is a terminal and [ColorAllowed] holds.
+//
+// On Windows a console reads escape sequences only once its virtual terminal
+// processing is switched on. ShouldColor switches it on for the console w
+// is, once, before it reports true for it, and reports false under every mode
+// for a console that does not take the setting, as the console host of
+// Windows versions before 10 does not.
 func ShouldColor(m ColorMode, w io.Writer) bool {
 	switch m {
 	case ColorAlways:
-		return true
+		return !plainConsole(w)
 	case ColorNever:
 		return false
 	}
-	return ColorAllowed() && IsTerminal(w)
+	return ColorAllowed() && IsTerminal(w) && !plainConsole(w)
 }
 
 // Colored reports whether output written to w is painted under the mode
@@ -101,7 +111,9 @@ func Colored(w io.Writer) bool { return ShouldColor(CurrentColorMode(), w) }
 // moves the cursor ruins a log file even under --color=always.
 
 // CanAnimate reports whether w may be redrawn in place: it is a terminal, the
-// environment permits color, and the user did not ask for --color=never.
+// environment permits color, and the user did not ask for --color=never. On
+// Windows it switches on the console's virtual terminal processing as
+// [ShouldColor] does, and reports false for a console that does not take it.
 func CanAnimate(w io.Writer) bool {
-	return CurrentColorMode() != ColorNever && ColorAllowed() && IsTerminal(w)
+	return CurrentColorMode() != ColorNever && ColorAllowed() && IsTerminal(w) && !plainConsole(w)
 }

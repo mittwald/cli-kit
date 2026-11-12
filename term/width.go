@@ -10,6 +10,23 @@ import (
 // Ellipsis marks where [Truncate] and [TruncateMiddle] cut text.
 const Ellipsis = "…"
 
+// tabStop is how far apart the tab stops are that a tab advances to, a
+// terminal's default.
+const tabStop = 8
+
+// widths measures text the same way on every machine. The characters whose
+// width Unicode leaves ambiguous (box-drawing lines, the ellipsis, bullets,
+// arrows and many other symbols) count one cell, which is how terminals draw
+// them unless they are set up otherwise. go-runewidth's default counts them
+// two cells wide under a Chinese, Japanese or Korean locale and under
+// RUNEWIDTH_EASTASIAN=1, so a table drew crooked and a block redrawn in place
+// climbed too far there.
+var widths = &runewidth.Condition{EastAsianWidth: false, StrictEmojiNeutral: true}
+
+// cells returns how many cells s takes up, which holds neither an escape
+// sequence nor a tab.
+func cells(s string) int { return widths.StringWidth(s) }
+
 // StripANSI removes terminal escape sequences from s: CSI sequences such as
 // colors and cursor movement (ESC [ … final byte), OSC sequences such as
 // hyperlinks (ESC ] … BEL or ESC \), and the short escapes such as ESC 7
@@ -85,16 +102,84 @@ func EscapeLen(s string) int {
 
 // VisibleWidth returns how many terminal cells s takes up once drawn, escape
 // sequences left out. Wide runes (CJK, most emoji) count two cells, combining
-// marks none. For text spanning several lines it measures the widest line.
+// marks none, and a tab counts the cells up to the next tab stop, every 8
+// columns from the start of its line. For text spanning several lines it
+// measures the widest line.
+//
+// A character whose width Unicode leaves ambiguous, such as a box-drawing
+// line, the ellipsis or a bullet, counts one cell, as terminals draw it by
+// default. The width of text does not depend on the locale: LANG, LC_ALL and
+// RUNEWIDTH_EASTASIAN change nothing about it.
 func VisibleWidth(s string) int {
 	if strings.Contains(s, "\n") {
 		widest := 0
 		for line := range strings.SplitSeq(s, "\n") {
-			widest = max(widest, VisibleWidth(line))
+			widest = max(widest, WidthAt(line, 0))
 		}
 		return widest
 	}
-	return runewidth.StringWidth(StripANSI(s))
+	return WidthAt(s, 0)
+}
+
+// WidthAt returns how many terminal cells s, text within one line, takes up
+// when it starts at column, the number of cells before it on its line. It
+// measures the way [VisibleWidth] does; the two differ only for text with a
+// tab in it, whose width depends on where the tab stands: "\tx" is 9 cells
+// wide at column 0 and 5 at column 4. Code that lays text out cell by cell
+// measures each piece at the column it is drawn at. A column below 0 is 0.
+func WidthAt(s string, column int) int {
+	column = max(column, 0)
+	start := column
+	s = StripANSI(s)
+	for {
+		text, rest, found := strings.Cut(s, "\t")
+		column += cells(text)
+		if !found {
+			return column - start
+		}
+		column += tabStop - column%tabStop
+		s = rest
+	}
+}
+
+// expandTabs replaces every tab of s with the spaces up to its tab stop, so
+// the text takes up the same cells wherever on a line it is drawn. Escape
+// sequences are copied through and take up no cells.
+func expandTabs(s string) string {
+	if !strings.Contains(s, "\t") {
+		return s
+	}
+	var b strings.Builder
+	column := 0
+	for i := 0; i < len(s); {
+		if n := EscapeLen(s[i:]); n > 0 {
+			b.WriteString(s[i : i+n])
+			i += n
+			continue
+		}
+		next := len(s)
+		if j := strings.IndexAny(s[i:], "\t\n\x1b"); j >= 0 {
+			next = i + j
+		}
+		b.WriteString(s[i:next])
+		column += cells(s[i:next])
+		i = next
+		if i == len(s) {
+			break
+		}
+		switch s[i] {
+		case '\t':
+			spaces := tabStop - column%tabStop
+			b.WriteString(strings.Repeat(" ", spaces))
+			column += spaces
+			i++
+		case '\n':
+			b.WriteByte('\n')
+			column = 0
+			i++
+		}
+	}
+	return b.String()
 }
 
 // PadRight pads s with spaces to width visible cells. Text already that wide
@@ -107,61 +192,91 @@ func PadRight(s string, width int) string {
 }
 
 // PadLeft pads s with leading spaces to width visible cells, right-aligning
-// it. Text already that wide or wider is returned unchanged.
+// it. Text already that wide or wider is returned unchanged. The spaces move
+// s along its line and its tab stops with it, so the tabs of text that is
+// padded become the spaces they stood for.
 func PadLeft(s string, width int) string {
 	if pad := width - VisibleWidth(s); pad > 0 {
-		return strings.Repeat(" ", pad) + s
+		return strings.Repeat(" ", pad) + expandTabs(s)
 	}
 	return s
 }
 
 // Truncate cuts s down to width visible cells, ending it with [Ellipsis] when
-// anything was cut. Escape sequences are kept, and a reset is appended after
-// a cut so a color never bleeds into what follows. A width of 0 or less,
-// what [Size] reports for anything but a terminal, leaves s whole.
+// anything was cut. Text of several lines is cut line by line: every line
+// wider than width ends with an Ellipsis of its own, and the lines that fit
+// stay as they are. Escape sequences up to a cut are kept, and a color or
+// hyperlink still open there, even one an earlier line opened, is closed
+// after the cut so that it never bleeds into what follows. A width of 0 or
+// less, what [Size] reports for anything but a terminal, leaves s whole.
 func Truncate(s string, width int) string {
 	if width <= 0 || VisibleWidth(s) <= width {
 		return s
 	}
-	ellipsisWidth := runewidth.StringWidth(Ellipsis)
-	if width <= ellipsisWidth {
-		return clip(s, width, "")
+	tail, room := Ellipsis, width-cells(Ellipsis)
+	if room <= 0 {
+		tail, room = "", width
 	}
-	return clip(s, width-ellipsisWidth, Ellipsis)
+	var (
+		b    strings.Builder
+		open openSequences
+	)
+	for i, line := range strings.Split(s, "\n") {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		if WidthAt(line, 0) <= width {
+			b.WriteString(line)
+			open.trackAll(line)
+			continue
+		}
+		clip(&b, &open, line, room, tail)
+	}
+	return b.String()
 }
 
-// clip keeps the leading graphemes of s that fit into width cells, then
-// appends tail. Escape sequences are copied through as they are met, and a
-// color or hyperlink still open at the cut is closed after tail.
-func clip(s string, width int, tail string) string {
-	var b strings.Builder
+// clip writes to b the leading graphemes of line, text without a newline,
+// that fit into width cells, then tail. Escape sequences are copied through
+// as they are met and tracked in open, and a color or hyperlink still open at
+// the cut is closed after tail. A line that fits into width is written whole,
+// without tail.
+func clip(b *strings.Builder, open *openSequences, line string, width int, tail string) {
 	used := 0
-	var open openSequences
-	for i := 0; i < len(s); {
-		if n := EscapeLen(s[i:]); n > 0 {
-			seq := s[i : i+n]
+	for i := 0; i < len(line); {
+		if n := EscapeLen(line[i:]); n > 0 {
+			seq := line[i : i+n]
 			b.WriteString(seq)
 			open.track(seq)
 			i += n
 			continue
 		}
-		next := len(s)
-		if j := strings.IndexByte(s[i:], 0x1b); j >= 0 {
+		next := len(line)
+		if j := strings.IndexByte(line[i:], 0x1b); j >= 0 {
 			next = i + j
 		}
-		graphemes := uniseg.NewGraphemes(s[i:next])
+		graphemes := uniseg.NewGraphemes(line[i:next])
 		for graphemes.Next() {
 			cluster := graphemes.Str()
-			w := runewidth.StringWidth(cluster)
+			w := clusterWidth(cluster, used)
 			if used+w > width {
-				return open.finish(&b, tail)
+				b.WriteString(tail)
+				open.end(b)
+				return
 			}
 			b.WriteString(cluster)
 			used += w
 		}
 		i = next
 	}
-	return open.finish(&b, tail)
+}
+
+// clusterWidth returns how many cells cluster, one grapheme cluster, takes up
+// at column: a tab the cells up to the next tab stop.
+func clusterWidth(cluster string, column int) int {
+	if cluster == "\t" {
+		return tabStop - column%tabStop
+	}
+	return cells(cluster)
 }
 
 // openSequences tracks whether a color or an OSC 8 hyperlink is still open
@@ -178,69 +293,109 @@ func (o *openSequences) track(seq string) {
 	}
 }
 
-func (o *openSequences) finish(b *strings.Builder, tail string) string {
-	b.WriteString(tail)
+// trackAll tracks every escape sequence in s.
+func (o *openSequences) trackAll(s string) {
+	for {
+		i := strings.IndexByte(s, 0x1b)
+		if i < 0 {
+			return
+		}
+		n := EscapeLen(s[i:])
+		o.track(s[i : i+n])
+		s = s[i+n:]
+	}
+}
+
+// end closes the hyperlink and ends the color that are open, and forgets
+// them.
+func (o *openSequences) end(b *strings.Builder) {
 	if o.linked {
 		b.WriteString("\x1b]8;;\x1b\\")
 	}
 	if o.styled {
 		b.WriteString("\x1b[0m")
 	}
-	return b.String()
+	*o = openSequences{}
 }
 
 // TruncateMiddle cuts s down to width visible cells by taking text out of its
 // middle, so both ends stay readable: "feature/very-long-branch-name" cut to
-// 21 cells becomes "feature/ve…ranch-name". Escape sequences are dropped. A
-// width of 0 or less leaves s whole.
+// 21 cells becomes "feature/ve…ranch-name". Text of several lines is cut line
+// by line: every line wider than width loses its own middle, and the lines
+// that fit keep their text. Where anything is cut, the escape sequences of s
+// are dropped, and the tabs of a line that is cut become the spaces up to
+// their tab stops. A width of 0 or less leaves s whole.
 func TruncateMiddle(s string, width int) string {
 	if width <= 0 || VisibleWidth(s) <= width {
 		return s
 	}
-	plain := StripANSI(s)
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		line = StripANSI(line)
+		if WidthAt(line, 0) > width {
+			line = cutMiddle(expandTabs(line), width)
+		}
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n")
+}
+
+// cutMiddle is TruncateMiddle for one line that is wider than width and
+// holds neither an escape sequence nor a tab.
+func cutMiddle(line string, width int) string {
 	var clusters []string
-	graphemes := uniseg.NewGraphemes(plain)
+	graphemes := uniseg.NewGraphemes(line)
 	for graphemes.Next() {
 		clusters = append(clusters, graphemes.Str())
 	}
-	budget := width - runewidth.StringWidth(Ellipsis)
+	budget := width - cells(Ellipsis)
 	if budget <= 0 {
-		return clip(plain, width, "")
+		// No room for an ellipsis beside any text: the head alone.
+		head, _ := leading(clusters, width)
+		return head
 	}
-	headBudget := (budget + 1) / 2
-	var head strings.Builder
-	used := 0
-	for _, c := range clusters {
-		w := runewidth.StringWidth(c)
-		if used+w > headBudget {
-			break
-		}
-		head.WriteString(c)
-		used += w
-	}
+	head, used := leading(clusters, (budget+1)/2)
 	// A wide rune that did not fit at the head leaves cells over; the tail
 	// gets them, so the result uses the whole width where it can.
 	tailBudget := budget - used
 	tailUsed := 0
 	start := len(clusters)
 	for start > 0 {
-		w := runewidth.StringWidth(clusters[start-1])
+		w := cells(clusters[start-1])
 		if tailUsed+w > tailBudget {
 			break
 		}
 		tailUsed += w
 		start--
 	}
-	return head.String() + Ellipsis + strings.Join(clusters[start:], "")
+	return head + Ellipsis + strings.Join(clusters[start:], "")
+}
+
+// leading returns the first of clusters that fit into width cells, and how
+// many cells they take up.
+func leading(clusters []string, width int) (string, int) {
+	var b strings.Builder
+	used := 0
+	for _, c := range clusters {
+		w := cells(c)
+		if used+w > width {
+			break
+		}
+		b.WriteString(c)
+		used += w
+	}
+	return b.String(), used
 }
 
 // ScreenRows returns how many terminal rows lines take up on a terminal width
 // cells wide. It follows the cursor the way a terminal does: a line wider
 // than the terminal wraps onto further rows, and a wide character that would
 // straddle the right edge starts the next row, leaving the last cell empty. A
-// line exactly as wide as the terminal takes one row. A width of 0 or less
-// counts one row per line. Redrawing a block in place depends on this count
-// being exact.
+// line exactly as wide as the terminal takes one row. A tab moves to the next
+// tab stop of its row, every 8 columns, and stops at the row's last column
+// instead of wrapping. A width of 0 or less counts one row per line. Redrawing
+// a block in place depends on this count being exact, so lines hold no
+// control character but the tab: no newline, no carriage return.
 func ScreenRows(lines []string, width int) int {
 	rows := 0
 	for _, line := range lines {
@@ -256,12 +411,17 @@ func lineRows(line string, width int) int {
 	row, column := 0, 0
 	graphemes := uniseg.NewGraphemes(StripANSI(line))
 	for graphemes.Next() {
-		cells := runewidth.StringWidth(graphemes.Str())
-		if column+cells > width {
+		cluster := graphemes.Str()
+		if cluster == "\t" {
+			column = max(column, min(column+tabStop-column%tabStop, width-1))
+			continue
+		}
+		n := cells(cluster)
+		if column+n > width {
 			row++
 			column = 0
 		}
-		column += cells
+		column += n
 	}
 	return row + 1
 }

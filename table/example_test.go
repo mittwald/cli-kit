@@ -65,3 +65,16 @@ func ExamplePlainCells() {
 	// Name  Comment
 	// Ada   URGENT: call me
 }
+
+// An export people open in a spreadsheet: a comment that starts like a
+// formula is written as text. The number stays a number.
+func ExampleEscapeFormulas() {
+	t := table.New(os.Stdout, []string{"Name", "Balance", "Comment"}, table.WithFormat(format.CSV), table.EscapeFormulas())
+	t.Append("Ada", "-12.50", "=HYPERLINK(\"https://evil.example\")")
+	t.Append("Alan", "+3.00", "- none")
+	_ = t.Render()
+	// Output:
+	// Name,Balance,Comment
+	// Ada,-12.50,"'=HYPERLINK(""https://evil.example"")"
+	// Alan,+3.00,'- none
+}

@@ -4,7 +4,7 @@
 
 ## Checklist
 
-- [ ] `make check` passes (vet, lint, race tests, cross-compile, tidy)
+- [ ] `make check` passes (vet, lint, race tests, locale tests, cross-compile, tidy)
 - [ ] New or changed exported API has godoc comments and tests
 - [ ] Breaking changes are called out above and labeled `breaking-change`
 - [ ] No new dependency, or the reason for it is explained above

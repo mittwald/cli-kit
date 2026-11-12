@@ -2,6 +2,8 @@ package live
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/mittwald/cli-kit/term"
@@ -215,5 +217,104 @@ func TestScreenRows(t *testing.T) {
 		if got := term.ScreenRows(c.lines, c.width); got != c.want {
 			t.Errorf("ScreenRows(%q, %d) = %d, want %d", c.lines, c.width, got, c.want)
 		}
+	}
+}
+
+// A line with a newline in it is drawn as the lines between the newlines,
+// and the next draw moves up over every one of them.
+func TestLiveSplitsLinesAtNewlines(t *testing.T) {
+	var out bytes.Buffer
+	live := New(&out)
+	live.size = func() (int, int) { return 80, 24 }
+
+	_ = live.Draw([]string{"error: step failed\r\ncaused by: timeout", "retrying"})
+	if got, want := out.String(), "\x1b[Jerror: step failed\ncaused by: timeout\nretrying\n"; got != want {
+		t.Errorf("draw = %q, want %q", got, want)
+	}
+	out.Reset()
+	_ = live.Draw([]string{"done"})
+	if got, want := out.String(), "\r\x1b[3A\x1b[Jdone\n"; got != want {
+		t.Errorf("redraw = %q, want %q", got, want)
+	}
+
+	live.size = func() (int, int) { return 80, 3 }
+	if live.Fits([]string{"a\nb\nc"}) || !live.Fits([]string{"a\nb"}) {
+		t.Error("Fits() does not count the lines a newline makes")
+	}
+}
+
+// A tab moves to the next tab stop, which can push the text behind it onto
+// a second row although it has few characters.
+func TestLiveCountsTabStops(t *testing.T) {
+	var out bytes.Buffer
+	live := New(&out)
+	live.size = func() (int, int) { return 12, 24 }
+
+	_ = live.Draw([]string{"a\t0123456789"}) // 8 cells up to the tab stop, then 10
+	out.Reset()
+	_ = live.Draw([]string{"b"})
+	if got, want := out.String(), "\r\x1b[2A\x1b[Jb\n"; got != want {
+		t.Errorf("redraw = %q, want %q", got, want)
+	}
+
+	// Cut to one row, the tab counts the cells up to its stop as well.
+	if got, want := truncateRows("ab\tcdefghij", 12, 1), "ab\tcde…"; got != want {
+		t.Errorf("truncateRows = %q, want %q", got, want)
+	}
+}
+
+// Drawing no lines takes the block off the screen and leaves no row behind
+// that a later draw would have to go below.
+func TestLiveDrawsNothingAsClear(t *testing.T) {
+	for _, empty := range [][]string{nil, {}} {
+		var out bytes.Buffer
+		live := New(&out)
+		live.size = func() (int, int) { return 80, 24 }
+
+		_ = live.Draw([]string{"a"})
+		out.Reset()
+		if err := live.Draw(empty); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := out.String(), "\r\x1b[1A\x1b[J"; got != want {
+			t.Errorf("empty draw = %q, want %q", got, want)
+		}
+		out.Reset()
+		_ = live.Draw(empty)
+		_ = live.Clear()
+		if out.Len() != 0 {
+			t.Errorf("empty draw on an empty block wrote %q", out.String())
+		}
+		_ = live.Draw([]string{"b"})
+		if got, want := out.String(), "\x1b[Jb\n"; got != want {
+			t.Errorf("draw after an empty draw = %q, want %q", got, want)
+		}
+	}
+}
+
+// A block far taller than the screen costs one look at the terminal and the
+// lines that end up on it, not one of each per line dropped: this draw took
+// most of a minute when every dropped line measured all the others again.
+func TestLiveDropsLinesWithoutMeasuringThemAgain(t *testing.T) {
+	var out bytes.Buffer
+	live := New(&out)
+	asked := 0
+	live.size = func() (int, int) { asked++; return 120, 40 }
+
+	lines := make([]string, 20000)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %05d %s", i, strings.Repeat("x", 70))
+	}
+	if err := live.Draw(lines); err != nil {
+		t.Fatal(err)
+	}
+	if asked != 1 {
+		t.Errorf("Draw asked for the terminal size %d times, want once", asked)
+	}
+	if got, want := strings.Count(out.String(), "\n"), 39; got != want {
+		t.Errorf("drew %d lines on a screen of 40 rows, want %d", got, want)
+	}
+	if !strings.HasSuffix(out.String(), lines[len(lines)-1]+"\n") {
+		t.Error("the last line is not the last one drawn")
 	}
 }

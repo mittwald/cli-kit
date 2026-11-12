@@ -3,6 +3,9 @@ package progress
 import (
 	"math"
 	"strconv"
+	"strings"
+
+	"github.com/mittwald/cli-kit/term"
 )
 
 // Color is a 24-bit RGB color.
@@ -13,6 +16,15 @@ type Palette struct {
 	// Gradient holds the colors the filled part of the bar passes through
 	// from left to right. A single color fills evenly; an empty Gradient
 	// uses the default one.
+	//
+	// The label on the gradient is a tint of the color behind it: lighter
+	// when every color of the gradient is dark enough for light text to
+	// reach Options.TextContrast, darker when every color is light enough
+	// for dark text to reach it. The whole label goes the same way, so it
+	// does not flip in the middle of a word. A gradient that runs from dark
+	// colors to light ones leaves no way that reaches the contrast on all
+	// of it: the label then goes the way that comes closest, and is hard to
+	// read on a part of the bar. Keep a gradient on one side.
 	Gradient []Color
 	// Track is the background of the part not yet filled.
 	Track Color
@@ -22,8 +34,7 @@ type Palette struct {
 
 // DefaultPalette is a cool gradient from steel blue through violet to teal,
 // on a dark slate track. Every gradient color stays dark enough to carry a
-// light tint of its own hue at the default text contrast, so the label never
-// flips to dark text in the middle of a word.
+// light tint of its own hue at the default text contrast.
 var DefaultPalette = Palette{
 	Gradient: []Color{
 		{R: 54, G: 86, B: 140},  // deep steel blue
@@ -37,13 +48,28 @@ var DefaultPalette = Palette{
 	TrackText: Color{R: 160, G: 167, B: 177},
 }
 
-// sgr returns the SGR parameters that paint text in fg on bg.
-func sgr(bg, fg Color) string {
+// sgr returns the SGR parameters that paint text in fg on bg: in 24-bit
+// colors where the terminal takes them, otherwise in the nearest of the 256
+// colors.
+func sgr(bg, fg Color, truecolor bool) string {
+	if !truecolor {
+		return "48;5;" + strconv.Itoa(term.Nearest256(bg.R, bg.G, bg.B)) +
+			";38;5;" + strconv.Itoa(term.Nearest256(fg.R, fg.G, fg.B))
+	}
 	return "48;2;" + rgb(bg) + ";38;2;" + rgb(fg)
 }
 
 func rgb(c Color) string {
 	return strconv.Itoa(int(c.R)) + ";" + strconv.Itoa(int(c.G)) + ";" + strconv.Itoa(int(c.B))
+}
+
+// truecolor reports whether colorterm, the value of the COLORTERM
+// environment variable, announces a terminal that takes 24-bit colors.
+// Terminals that do not take them read the parameters of a 24-bit color as
+// attributes of their own, so the bar paints them only where they are
+// announced.
+func truecolor(colorterm string) bool {
+	return strings.EqualFold(colorterm, "truecolor") || strings.EqualFold(colorterm, "24bit")
 }
 
 // gradientAt returns the gradient color of column out of width columns.
@@ -67,25 +93,58 @@ func mix(a, b Color, fraction float64) Color {
 type hsl struct{ hue, saturation, lightness float64 }
 
 // textColor returns the label color for background: the background's own
-// hue and saturation, lightened only as far as reaching contrast requires.
-// It always lightens. Choosing light or dark text per cell would flip the
-// label in the middle of a word wherever the gradient crosses mid-luminance.
-func textColor(background Color, contrast float64) Color {
+// hue and saturation, made lighter, or darker with darker set, only as far
+// as reaching contrast requires. A background that cannot carry the
+// contrast that way gets white or black text.
+//
+// The direction is the caller's, the same for a whole gradient, see
+// darkerText. Choosing light or dark text per cell would flip the label in
+// the middle of a word wherever the gradient crosses mid-luminance.
+func textColor(background Color, contrast float64, darker bool) Color {
 	const steps = 16
 	base := toHSL(background)
+	target := 1.0
+	if darker {
+		target = 0
+	}
 	low, high := 0.0, 1.0
 	for range steps {
 		mid := (low + high) / 2
 		candidate := base
-		candidate.lightness += (1 - candidate.lightness) * mid
+		candidate.lightness += (target - candidate.lightness) * mid
 		if contrastRatio(background, fromHSL(candidate)) >= contrast {
 			high = mid
 		} else {
 			low = mid
 		}
 	}
-	base.lightness += (1 - base.lightness) * high
+	base.lightness += (target - base.lightness) * high
 	return fromHSL(base)
+}
+
+// darkerText decides which way the label on gradient goes: lighter than
+// the color behind it when light text reaches contrast on every color the
+// gradient passes through, as it does on the dark colors a bar usually has,
+// and darker when it does not and dark text gets closer to contrast on the
+// color that suits it least.
+func darkerText(gradient []Color, contrast float64) bool {
+	white, black := Color{R: 255, G: 255, B: 255}, Color{}
+	onLight, onDark := math.Inf(1), math.Inf(1)
+	measure := func(c Color) {
+		onLight = min(onLight, contrastRatio(c, white))
+		onDark = min(onDark, contrastRatio(c, black))
+	}
+	const between = 8 // colors looked at from one gradient color to the next
+	for i, c := range gradient {
+		measure(c)
+		if i+1 == len(gradient) {
+			break
+		}
+		for step := 1; step < between; step++ {
+			measure(mix(c, gradient[i+1], float64(step)/between))
+		}
+	}
+	return onLight < contrast && onDark > onLight
 }
 
 func toHSL(c Color) hsl {

@@ -72,10 +72,17 @@ func TestSignalPreservesExitStatus(t *testing.T) {
 	if !strings.Contains(string(output), ShowCursorSequence) {
 		t.Fatalf("interrupted child did not show the cursor: %q", output)
 	}
+	// What OnRestore registered ran before the signal ended the process.
+	if !strings.Contains(string(output), restoredMark) {
+		t.Fatalf("interrupted child did not call its restore function: %q", output)
+	}
 }
+
+const restoredMark = "[terminal restored]"
 
 func interruptSelfWithHiddenCursor() {
 	defer InstallSignalRestore()()
+	defer OnRestore(func() { _, _ = os.Stdout.WriteString(restoredMark) })()
 	NewCursor(os.Stdout).Hide()
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
 		os.Exit(4)

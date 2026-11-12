@@ -2,6 +2,7 @@ package secret
 
 import (
 	"errors"
+	"fmt"
 	"maps"
 	"sync"
 )
@@ -11,6 +12,10 @@ var (
 	ErrNotFound = errors.New("secret: not found")
 	// ErrEmpty reports an attempt to store or use an empty secret.
 	ErrEmpty = errors.New("secret: empty value")
+	// ErrTooLong reports a secret longer than its limit: a line longer than
+	// [Resolver.MaxLen] in a file or on stdin, or a value or file larger
+	// than a [FileStore] keeps.
+	ErrTooLong = errors.New("secret: too long")
 )
 
 // Store keeps one secret per account name.
@@ -84,10 +89,24 @@ func (m *Memory) Delete(account string) error {
 //     When secondary has no secret either, the error wraps [ErrNotFound],
 //     also when primary failed, so a [Resolver] goes on to prompt; it
 //     wraps primary's failure too.
-//   - Set writes primary, and secondary only when primary fails.
+//   - Set writes primary and then removes an older copy from secondary, as
+//     far as secondary lets it. When primary fails, Set writes secondary
+//     instead and reports success: the secret then lives in secondary,
+//     which for a [FileStore] is a file that is not encrypted. A primary
+//     that refused the write but still answers reads with an older secret
+//     would hide the new one, since Get asks primary first; Set deletes
+//     that older secret from primary. When primary does not let go of it
+//     either, Set fails with an error wrapping both of primary's failures,
+//     and keeps nothing in secondary.
 //   - Delete removes the account from both, so a secret written to the
-//     secondary while the primary was unavailable does not come back. It
-//     succeeds when either store removed the secret.
+//     secondary while the primary was unavailable does not come back. When
+//     primary cannot delete a secret it still returns, Delete fails with an
+//     error that does not wrap [ErrNotFound], even if secondary removed its
+//     copy: the next Get would return that secret again. A primary that
+//     fails and cannot be read either is taken to be unavailable, as in Get
+//     and Set: Delete then succeeds when secondary removed the secret, and
+//     returns an error wrapping [ErrNotFound] and primary's failure when
+//     secondary holds none.
 func Fallback(primary, secondary Store) Store {
 	return fallback{primary: primary, secondary: secondary}
 }
@@ -120,29 +139,68 @@ func (f fallback) Set(account, value string) error {
 	}
 	err := f.primary.Set(account, value)
 	if err == nil {
+		// A copy from a run without primary must not outlive the move: it
+		// would stay readable in secondary, and come back whenever primary
+		// is away.
+		_ = f.secondary.Delete(account)
 		return nil
 	}
 	if secondaryErr := f.secondary.Set(account, value); secondaryErr != nil {
 		return errors.Join(err, secondaryErr)
 	}
-	return nil
+	// Get asks primary first. A primary that cannot be read is unavailable
+	// and hides nothing; one that still answers with an older secret does.
+	if !f.primaryHidesNew(account, value) {
+		return nil
+	}
+	deleteErr := f.primary.Delete(account)
+	if deleteErr == nil || errors.Is(deleteErr, ErrNotFound) {
+		return nil
+	}
+	_ = f.secondary.Delete(account)
+	return fmt.Errorf("secret: the primary store took no new secret and keeps the old one: %w",
+		errors.Join(err, deleteErr))
+}
+
+// primaryHidesNew reports whether primary answers a read of account with a
+// secret other than value, which Get would return in place of value.
+func (f fallback) primaryHidesNew(account, value string) bool {
+	old, err := f.primary.Get(account)
+	return err == nil && old != value
 }
 
 func (f fallback) Delete(account string) error {
 	err := f.primary.Delete(account)
 	secondaryErr := f.secondary.Delete(account)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		_, getErr := f.primary.Get(account)
+		switch {
+		case getErr == nil:
+			// Primary still returns the secret, so it is not forgotten,
+			// whatever secondary did.
+			if secondaryErr != nil && !errors.Is(secondaryErr, ErrNotFound) {
+				err = errors.Join(err, secondaryErr)
+			}
+			return fmt.Errorf("secret: the primary store still holds the secret: %w", err)
+		case errors.Is(getErr, ErrNotFound):
+			err = getErr
+		case secondaryErr == nil:
+			// A primary that fails is taken to be unavailable, as in Get and Set.
+			return nil
+		case errors.Is(secondaryErr, ErrNotFound):
+			return errors.Join(secondaryErr, err)
+		default:
+			return errors.Join(err, secondaryErr)
+		}
+	}
+	// Primary removed the secret or holds none.
 	switch {
 	case err == nil || secondaryErr == nil:
-		// A primary that fails is taken to be unavailable, as in Get and Set.
 		return nil
-	case errors.Is(err, ErrNotFound) && errors.Is(secondaryErr, ErrNotFound):
-		return ErrNotFound
-	case errors.Is(err, ErrNotFound):
-		return secondaryErr
 	case errors.Is(secondaryErr, ErrNotFound):
-		return err
+		return ErrNotFound
 	default:
-		return errors.Join(err, secondaryErr)
+		return secondaryErr
 	}
 }
 
@@ -159,7 +217,9 @@ func (f fallback) Delete(account string) error {
 //   - When primary fails for another reason, such as a missing keyring,
 //     secondary is the store: Get returns what secondary returns, its
 //     errors alone, and moves nothing.
-//   - Set and Delete are those of Fallback.
+//   - Set and Delete are those of Fallback. Set removes the secondary's
+//     copy once primary took the secret, so a secret saved again does not
+//     stay behind in a file.
 func Migrating(primary, secondary Store) Store {
 	return migrating{fallback{primary: primary, secondary: secondary}}
 }

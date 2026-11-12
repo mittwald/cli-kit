@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,10 +32,12 @@ type Updater struct {
 	Source Source
 	// Current is the version of the running binary, usually injected at
 	// build time. A value that is no version, such as "dev", counts as
-	// older than any release.
+	// older than any release; what "git describe" prints for a commit after
+	// a tag, such as "v1.2.3-5-gabc1234", counts as newer than that tag
+	// (see [Compare]).
 	Current string
 	// Asset names the archive for a platform. It is required; see
-	// [TitleCaseAssets] and [VersionedAssets].
+	// [DefaultAssets], [TitleCaseAssets] and [VersionedAssets].
 	Asset AssetNamer
 	// Platform is the platform to download for; the zero value means
 	// [CurrentPlatform].
@@ -46,24 +49,28 @@ type Updater struct {
 	// changes from release to release, such as GoReleaser's default
 	// "tool_1.2.3_checksums.txt" (see [VersionedChecksums]).
 	ChecksumsFor func(rel Release) string
-	// SkipChecksum installs the archive without verifying it. Only set it
-	// for a source that publishes no checksums file and is trusted
-	// otherwise.
+	// SkipChecksum installs the archive without verifying it, for a source
+	// that publishes no checksums file. What is lost is the detection of a
+	// download that was corrupted or altered on its way; the checksum never
+	// proved more than that (see [VerifyChecksum]).
 	SkipChecksum bool
 	// Binary is the file name of the binary inside the archive, without
 	// ".exe"; empty means the running executable's own name. When no file
-	// has that name, the largest file is taken.
+	// has that name, the largest file is taken. Either way the file has to
+	// be an executable for Platform; see [ExtractFor].
 	Binary string
 	// Executable is the file to replace; empty means the running
-	// executable, with symbolic links resolved.
+	// executable. Symbolic links are resolved either way, so the file a
+	// link leads to is replaced, not the link.
 	Executable string
 	// Managed reports whether a package manager owns the executable at a
-	// path, in which case Update and Install refuse to replace it. Nil
+	// path, which it is given with symbolic links resolved, in which case
+	// Update and Install refuse to replace it. Nil
 	// means [PackageManaged]; a tool that ships no OS package and may
 	// replace itself anywhere sets a function that always returns false.
 	Managed func(path string) bool
-	// MaxDownload bounds the archive size; zero means
-	// [DefaultMaxDownload].
+	// MaxDownload bounds the archive size in bytes; zero means
+	// [DefaultMaxDownload]. The archive is held in memory.
 	MaxDownload int64
 }
 
@@ -82,6 +89,9 @@ type Result struct {
 }
 
 // Check returns the latest release and whether it is newer than Current.
+// When the release's tag is no version, such as "release-2", it cannot
+// tell: it returns the release with an error wrapping [ErrNoVersion]
+// rather than report the running version as current forever.
 func (u *Updater) Check(ctx context.Context) (Release, bool, error) {
 	if u.Source == nil {
 		return Release{}, false, errors.New("selfupdate: Updater.Source is required")
@@ -90,12 +100,17 @@ func (u *Updater) Check(ctx context.Context) (Release, bool, error) {
 	if err != nil {
 		return Release{}, false, err
 	}
+	if _, ok := parseVersion(rel.Tag); !ok {
+		return rel, false, fmt.Errorf("%w: %q", ErrNoVersion, rel.Tag)
+	}
 	return rel, IsNewer(rel.Tag, u.Current), nil
 }
 
 // Update installs the latest release unless the running version is already
 // current; force installs it anyway. Before it asks for the latest release
-// it makes sure the executable may be replaced, as Install does.
+// it makes sure the executable may be replaced, as Install does. A latest
+// release whose tag is no version is an error wrapping [ErrNoVersion],
+// with force too; [Updater.Install] installs such a release.
 func (u *Updater) Update(ctx context.Context, force bool) (Result, error) {
 	result, err := u.prepare()
 	if err != nil {
@@ -119,7 +134,7 @@ func (u *Updater) Update(ctx context.Context, force bool) (Result, error) {
 // it refuses, with an error wrapping [ErrManaged], an executable a package
 // manager owns, and fails early when the executable's directory is not
 // writable. The archive is verified against the release's checksums file
-// unless SkipChecksum is set.
+// unless SkipChecksum is set; see [VerifyChecksum] for what that proves.
 func (u *Updater) Install(ctx context.Context, rel Release) (Result, error) {
 	result, err := u.prepare()
 	if err != nil {
@@ -151,7 +166,6 @@ func (u *Updater) prepare() (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	RemoveOld(path)
 	result := Result{From: u.Current, Path: path}
 	managed := u.Managed
 	if managed == nil {
@@ -160,6 +174,9 @@ func (u *Updater) prepare() (Result, error) {
 	if managed(path) {
 		return result, fmt.Errorf("%w: %s; update it with that package manager instead", ErrManaged, path)
 	}
+	// Only now is the directory this package's to tidy: a managed one is
+	// left exactly as it is.
+	RemoveOld(path)
 	if err := writable(filepath.Dir(path)); err != nil {
 		return result, err
 	}
@@ -178,7 +195,7 @@ func (u *Updater) install(ctx context.Context, result Result) (Result, error) {
 		checksumsName := u.checksums(rel)
 		checksums, err := u.download(ctx, rel, checksumsName, maxChecksumsSize)
 		if err != nil {
-			return result, fmt.Errorf("selfupdate: fetch checksums to verify %s: %w", name, err)
+			return result, fmt.Errorf("selfupdate: fetch checksums to verify %s: %w", plain(name), err)
 		}
 		if err := VerifyChecksum(checksums, name, archive); err != nil {
 			return result, err
@@ -189,7 +206,7 @@ func (u *Updater) install(ctx context.Context, result Result) (Result, error) {
 	if binaryName == "" {
 		binaryName = strings.TrimSuffix(filepath.Base(result.Path), ".exe")
 	}
-	binary, err := Extract(name, archive, binaryName)
+	binary, err := ExtractFor(u.platform(), name, archive, binaryName)
 	if err != nil {
 		return result, err
 	}
@@ -221,11 +238,20 @@ func (u *Updater) checksums(rel Release) string {
 	return DefaultChecksums
 }
 
+// executable returns the file to replace, with symbolic links resolved.
 func (u *Updater) executable() (string, error) {
-	if u.Executable != "" {
+	if u.Executable == "" {
+		return executablePath()
+	}
+	resolved, err := filepath.EvalSymlinks(u.Executable)
+	switch {
+	case err == nil:
+		return resolved, nil
+	case errors.Is(err, fs.ErrNotExist):
+		// Nothing is there yet: the binary is installed at the path itself.
 		return u.Executable, nil
 	}
-	return executablePath()
+	return "", fmt.Errorf("selfupdate: resolve %s: %w", u.Executable, err)
 }
 
 func (u *Updater) maxDownload() int64 {
@@ -241,12 +267,15 @@ func (u *Updater) download(ctx context.Context, rel Release, name string, limit 
 		return nil, err
 	}
 	defer body.Close()
+	// One byte more than the limit is read to tell a file of exactly that
+	// size from a larger one.
+	limit = min(limit, math.MaxInt64-1)
 	data, err := io.ReadAll(io.LimitReader(body, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("selfupdate: download %s: %w", name, err)
+		return nil, fmt.Errorf("selfupdate: download %s: %w", plain(name), err)
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("selfupdate: %s is larger than %d bytes", name, limit)
+		return nil, fmt.Errorf("selfupdate: %s is larger than %d bytes", plain(name), limit)
 	}
 	return data, nil
 }

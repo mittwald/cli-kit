@@ -124,3 +124,55 @@ func TestRenderShowsTheOpenSpan(t *testing.T) {
 		t.Errorf("rows = %q / %q, want the marker on the cursor row only", rows[0], rows[1])
 	}
 }
+
+// A range covers every item between its ends, so a view that narrows the
+// rows is set aside while one is open: a row the view hides would end up
+// inside a range without ever being shown.
+func TestSelectRangeSetsANarrowingViewAside(t *testing.T) {
+	opts := Options{
+		Items: []Item{
+			{Cells: []string{"c1"}, Groups: []string{"mine"}},
+			{Cells: []string{"c2"}, Groups: []string{"theirs"}},
+			{Cells: []string{"c3"}, Groups: []string{"mine"}},
+		},
+		Views: []View{{Name: "mine", Groups: []string{"mine"}}, {Name: "all"}},
+		Range: true,
+	}
+	l := newList(opts, 24, false)
+	if len(l.matches) != 2 {
+		t.Fatalf("matches = %v, want the view to have narrowed the list", l.matches)
+	}
+	l.apply(key{kind: keyDown})
+	l.apply(key{kind: keyEnter})
+	if len(l.matches) != 3 || l.selected() != 2 {
+		t.Fatalf("matches %v, selected %d; want every row shown and the cursor still on c3", l.matches, l.selected())
+	}
+	if got := l.position(); !strings.Contains(got, " · mine · all") {
+		t.Errorf("position() = %q, want no view marked as in force", got)
+	}
+	l.apply(key{kind: keyUp})
+	if first, last := l.selectedRange(); first != 1 || last != 2 {
+		t.Errorf("range = %d..%d, want c2 to c3, both on screen", first, last)
+	}
+	// Tab does not switch while the range is open, and Esc brings the view
+	// back with the cursor on a row it shows.
+	l.apply(key{kind: keyTab})
+	l.apply(key{kind: keyUp})
+	l.apply(key{kind: keyBack})
+	if len(l.matches) != 2 || l.view != 0 || l.selected() != 0 {
+		t.Errorf("after Esc: matches %v, view %d, selected %d; want the narrowed view back, on c1", l.matches, l.view, l.selected())
+	}
+	if got := l.position(); !strings.Contains(got, "[mine]") {
+		t.Errorf("position() = %q, want the view in force again", got)
+	}
+
+	// The ends handed back are two rows that were on screen with everything
+	// between them.
+	first, last, err := driveRange(t, opts, "\r", "\x1b[B", "\x1b[B", "\r")
+	if err != nil || first != 0 || last != 2 {
+		t.Errorf("range = %d..%d, err %v; want 0..2 with c2 shown in between", first, last, err)
+	}
+	if first, last, err := driveRange(t, opts, "\r", "\x1b[B", "\r"); err != nil || first != 0 || last != 1 {
+		t.Errorf("range = %d..%d, err %v; want one step down to reach c2, not c3", first, last, err)
+	}
+}

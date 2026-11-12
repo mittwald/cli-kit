@@ -36,8 +36,9 @@ func CurrentPlatform() Platform {
 	return p
 }
 
-// ArchiveExt returns the archive extension GoReleaser uses by default with
-// a zip override for Windows: "zip" on Windows, "tar.gz" elsewhere.
+// ArchiveExt returns the archive extension of GoReleaser's tar.gz default
+// with the usual zip override for Windows (format_overrides, as
+// "goreleaser init" writes it): "zip" on Windows, "tar.gz" elsewhere.
 func (p Platform) ArchiveExt() string {
 	if p.OS == "windows" {
 		return "zip"
@@ -50,9 +51,33 @@ func (p Platform) ArchiveExt() string {
 // configuration, plus the archive extension.
 type AssetNamer func(rel Release, p Platform) string
 
-// TitleCaseAssets names archives the way GoReleaser's default
-// name_template does, as in "tool_Linux_x86_64.tar.gz" or
-// "tool_Windows_i386.zip":
+// DefaultAssets names archives the way GoReleaser does when its
+// configuration sets no archives.name_template, as in
+// "tool_1.2.3_linux_amd64.tar.gz" or "tool_1.2.3_linux_armv7.tar.gz":
+//
+//	{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+//	{{- with .Arm }}v{{ . }}{{ end }}
+//
+// GoReleaser's default goes on to append the MIPS variant and a GOAMD64
+// level other than "v1"; a release built for those needs an [AssetNamer]
+// of its own. Windows archives are named ".zip" (see
+// [Platform.ArchiveExt]), which takes the usual format_overrides entry:
+// without one GoReleaser packs a tar.gz for Windows too.
+func DefaultAssets(project string) AssetNamer {
+	return func(rel Release, p Platform) string {
+		arch := p.Arch
+		if p.Arm != "" {
+			arch += "v" + p.Arm
+		}
+		return project + "_" + rel.Version() + "_" + p.OS + "_" + arch + "." + p.ArchiveExt()
+	}
+}
+
+// TitleCaseAssets names archives by a common title-case template, the one
+// "goreleaser init" writes into a new configuration so that the names
+// match the output of uname, as in "tool_Linux_x86_64.tar.gz" or
+// "tool_Windows_i386.zip". It is not GoReleaser's default, which
+// [DefaultAssets] follows. The template is:
 //
 //	{{ .ProjectName }}_
 //	{{- title .Os }}_

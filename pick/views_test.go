@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -363,4 +364,153 @@ func TestGroupViewsShowTheirTitle(t *testing.T) {
 	if got := l.render(80)[0]; !strings.HasPrefix(got, "Which version to edit?") {
 		t.Errorf("title = %q, want the view's title after Tab", got)
 	}
+}
+
+// A lens that names no view leaves the view the options ask for, and a view
+// without a name is found again by its position, the way the status line
+// labels it.
+func TestLensFindsAViewWithoutAName(t *testing.T) {
+	items := []Item{{Cells: []string{"a"}, Groups: []string{"g1"}}, {Cells: []string{"b"}, Groups: []string{"g2"}}}
+	views := []View{{Groups: []string{"g1"}}, {Groups: []string{"g2"}}, {}}
+
+	if l := newList(Options{Items: items, Views: views, Lens: &Lens{}}, 0, false); l.view != 0 {
+		t.Errorf("an empty lens opened view %d, want the first", l.view)
+	}
+	if l := newList(Options{Items: items, Views: views, View: 1, Lens: &Lens{Filter: "b"}}, 0, false); l.view != 1 {
+		t.Errorf("a lens with a filter only opened view %d, want Options.View", l.view)
+	}
+
+	// What a list is closed on is what the next one opens on.
+	for view := range views {
+		l := newList(Options{Items: items, Views: views, View: view}, 0, false)
+		lens := l.lens(Lens{})
+		if want := strconv.Itoa(view + 1); lens.View != want {
+			t.Errorf("view %d: lens().View = %q, want its position %q", view, lens.View, want)
+		}
+		if reopened := newList(Options{Items: items, Views: views, Lens: &lens}, 0, false); reopened.view != view {
+			t.Errorf("view %d: reopened on view %d", view, reopened.view)
+		}
+	}
+
+	// Among views of the same name the first one is meant.
+	named := []View{{Name: "x", Groups: []string{"g1"}}, {Name: "x", Groups: []string{"g2"}}}
+	if l := newList(Options{Items: items, Views: named, Lens: &Lens{View: "x"}}, 0, false); l.view != 0 {
+		t.Errorf("a name two views share opened view %d, want the first", l.view)
+	}
+}
+
+// Options.Initial names an item of the view the list opens on, also when
+// that view's rows arrive only once it has loaded them.
+func TestInitialOnAViewThatLoadsItsRows(t *testing.T) {
+	rows := []Item{{Cells: []string{"a"}}, {Cells: []string{"b"}}, {Cells: []string{"c"}}}
+	opts := Options{Initial: 2, Views: []View{
+		{Name: "remote", Load: func() ([]Item, error) { return rows, nil }},
+		{Name: "local", Items: rows},
+	}}
+	l := newList(opts, 0, false)
+	l.runPendingLoad()
+	if got := l.selected(); got != 2 {
+		t.Errorf("selected() = %d once the rows are there, want Initial's 2", got)
+	}
+
+	// Leaving the view first makes its rows arrive as any other view's.
+	l = newList(opts, 0, false)
+	work := l.nextLoad()
+	l.apply(key{kind: keyTab})
+	work()()
+	l.apply(key{kind: keyTab})
+	if got := l.selected(); got != 0 {
+		t.Errorf("selected() = %d after a switch away and back, want the first row", got)
+	}
+}
+
+// loadingList is a list that opens on a view whose Load blocks until release
+// is closed, and the channel started that Load closes once it runs.
+func loadingList() (l *list, started, release chan struct{}) {
+	started, release = make(chan struct{}), make(chan struct{})
+	opts := scopedOptions()
+	opts.Views[1] = View{Name: "remote", Load: func() ([]Item, error) {
+		close(started)
+		<-release
+		return []Item{{Cells: []string{"origin/a"}}, {Cells: []string{"origin/b"}}}, nil
+	}}
+	opts.View = 1
+	return newList(opts, 0, false), started, release
+}
+
+// A view loads its rows off the key loop, so the list takes keys meanwhile:
+// Esc and Ctrl-C leave it while Load is still running.
+func TestLoadCanBeLeftWhileItRuns(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		key  byte
+		want error
+	}{
+		{"Esc", 0x1b, ErrBack},
+		{"Ctrl-C", 0x03, ErrInterrupted},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			l, started, release := loadingList()
+			defer close(release)
+			// The key is typed once Load is seen running.
+			source := newWakeableInput(nil, []byte{c.key})
+			source.blocked = func() {
+				<-started
+				source.wake()
+			}
+			err := drive(l, &renderer{w: io.Discard}, fixedSize(80, 24), 0, source)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("drive() error = %v, want %v", err, c.want)
+			}
+			if l.loads[1] != loadRunning || len(l.items) != 0 {
+				t.Errorf("load state %d with %d rows; want the list left before Load returned", l.loads[1], len(l.items))
+			}
+		})
+	}
+}
+
+// The rows a view loaded go on screen as soon as they are there, and the
+// keys typed after that act on them.
+func TestLoadedRowsArriveWhileTheListWaitsForAKey(t *testing.T) {
+	l, _, release := loadingList()
+	var out strings.Builder
+	source := newWakeableInput(nil, []byte("\x1b[B\r"))
+	source.blocked = func() { close(release) }
+	err := drive(l, &renderer{w: &out}, fixedSize(80, 24), 0, source)
+	if err != nil || l.selected() != 1 {
+		t.Fatalf("drive() = %v, selected %d; want row 1 of the loaded view", err, l.selected())
+	}
+	loading, loaded := strings.Index(out.String(), "loading…"), strings.Index(out.String(), "origin/b")
+	if loading < 0 || loaded < loading {
+		t.Errorf("drawn %q; want the loading line first and the rows after it", out.String())
+	}
+
+	// Rows that arrive after the list moved on to another view are kept for
+	// when it comes back.
+	l, started, release := loadingList()
+	source = newWakeableInput([]byte("\t"), nil, []byte("\t"), []byte("\r"))
+	source.blocked = func() {
+		<-started
+		close(release)
+	}
+	err = drive(l, &renderer{w: io.Discard}, fixedSize(80, 24), 0, source)
+	if err != nil || l.view != 1 || len(l.items) != 2 || l.selected() != 0 {
+		t.Errorf("drive() = %v, view %d, %d rows, selected %d; want the loaded view with its rows", err, l.view, len(l.items), l.selected())
+	}
+}
+
+// A panic in Load is raised again on the key loop, where the prompt's
+// deferred cleanup puts the terminal back before the program ends.
+func TestLoadPanicReachesTheKeyLoop(t *testing.T) {
+	opts := scopedOptions()
+	opts.Views[1] = View{Name: "remote", Load: func() ([]Item, error) { panic("boom") }}
+	opts.View = 1
+	l := newList(opts, 0, false)
+	defer func() {
+		if got := recover(); got != "boom" {
+			t.Errorf("recovered %v, want the panic Load raised", got)
+		}
+	}()
+	_ = drive(l, &renderer{w: io.Discard}, fixedSize(80, 24), 0, newWakeableInput(nil))
+	t.Error("drive() returned")
 }

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/mattn/go-runewidth"
 
 	"github.com/mittwald/cli-kit/term"
 	"github.com/mittwald/cli-kit/theme"
@@ -278,5 +281,105 @@ func TestLastCellOptionWins(t *testing.T) {
 	tbl.Append("\x1b[31mred\x1b[0m")
 	if got, want := render(t, tbl), "\x1b[31mred\x1b[0m\n"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A pipe table is one only with its header rule, so a markdown table without
+// headers gets an empty header row above it.
+func TestMarkdownWithoutHeaders(t *testing.T) {
+	tbl := New(&bytes.Buffer{}, nil, WithStyle(Markdown), WithAlignment(AlignLeft, AlignRight))
+	tbl.Append("api", "3")
+	tbl.Append("worker", "12")
+	want := "|        |    |\n" +
+		"|--------|---:|\n" +
+		"| api    |  3 |\n" +
+		"| worker | 12 |\n"
+	if got := render(t, tbl); got != want {
+		t.Fatalf("markdown mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+
+	// Without rows there is still nothing to write, and the drawn frames keep
+	// leaving the header out.
+	if got := render(t, New(&bytes.Buffer{}, nil, WithStyle(Markdown))); got != "" {
+		t.Fatalf("an empty markdown table wrote %q", got)
+	}
+	tbl = New(&bytes.Buffer{}, nil, WithStyle(ASCII))
+	tbl.Append("a", "b")
+	if got, want := render(t, tbl), "+---+---+\n| a | b |\n+---+---+\n"; got != want {
+		t.Fatalf("ascii table = %q, want %q", got, want)
+	}
+}
+
+// Characters whose width Unicode leaves ambiguous, the rules of the frames
+// among them, are one cell wide whatever the locale. go-runewidth's default
+// counts them two cells wide under a Chinese, Japanese or Korean locale; the
+// test switches that on, as LC_ALL=ja_JP.UTF-8 or RUNEWIDTH_EASTASIAN=1 do
+// at start-up, so it guards the frames on every machine.
+func TestAmbiguousWidthCharactersKeepTheFrame(t *testing.T) {
+	eastAsian := runewidth.DefaultCondition.EastAsianWidth
+	runewidth.DefaultCondition.EastAsianWidth = true
+	t.Cleanup(func() { runewidth.DefaultCondition.EastAsianWidth = eastAsian })
+
+	styles := []Style{Markdown}
+	for _, name := range StyleNames() {
+		style, _ := LookupStyle(name)
+		styles = append(styles, style)
+	}
+	for _, style := range styles {
+		t.Run(style.Name, func(t *testing.T) {
+			tbl := New(&bytes.Buffer{}, []string{"Größe", "Unit", "Note"}, WithStyle(style), WithColor(false), WithAlignment(AlignLeft, AlignRight))
+			tbl.Append("α-Test", "21 °C", "§ 1 → § 2")
+			tbl.Append("βγδ", "±5 %", "too long…")
+			tbl.Append("•", "×", "“quoted”\n— dash")
+			got := render(t, tbl)
+			width := tbl.TotalWidth()
+			if !style.Framed() {
+				// The unframed layout does not pad its last column.
+				if want := "α-Test  21 °C  § 1 → § 2"; lines(got)[1] != want {
+					t.Fatalf("row = %q, want %q", lines(got)[1], want)
+				}
+				return
+			}
+			for _, line := range lines(got) {
+				// Every character here is one cell wide, so a line has as
+				// many characters as cells.
+				if n := utf8.RuneCountInString(line); n != width {
+					t.Errorf("line holds %d characters, TotalWidth %d: %q", n, width, line)
+				}
+				if w := term.VisibleWidth(line); w != width {
+					t.Errorf("line width %d, TotalWidth %d: %q", w, width, line)
+				}
+			}
+		})
+	}
+}
+
+// A rule is as wide as the rows it separates whatever its fill: one wider
+// than a cell is repeated as often as it fits and cut for the rest.
+func TestRuleFillWiderThanOneCell(t *testing.T) {
+	for _, tc := range []struct {
+		fill string
+		want string // the rule over the columns "abc" and "de"
+	}{
+		{"-", "+-----+----+"},
+		{"=-", "+=-=-=+=-=-+"},
+		{"·:.", "+·:.·:+·:.·+"},
+		// A wide character that does not fit the last cell leaves it empty.
+		{"\u4e00", "+\u4e00\u4e00 +\u4e00\u4e00+"},
+		{"\x1b[2m-\x1b[0m", "+" + strings.Repeat("\x1b[2m-\x1b[0m", 5) + "+" + strings.Repeat("\x1b[2m-\x1b[0m", 4) + "+"},
+		// A cut-off pattern leaves no escape sequence open.
+		{"\x1b[2m=-\x1b[0m", "+" + strings.Repeat("\x1b[2m=-\x1b[0m", 2) + "=+" + strings.Repeat("\x1b[2m=-\x1b[0m", 2) + "+"},
+	} {
+		style := ASCII
+		style.Top.Fill = tc.fill
+		tbl := New(&bytes.Buffer{}, nil, WithStyle(style), WithColor(false))
+		tbl.Append("abc", "de")
+		got := lines(render(t, tbl))
+		if got[0] != tc.want {
+			t.Errorf("fill %q: rule = %q, want %q", tc.fill, got[0], tc.want)
+		}
+		if w, row := term.VisibleWidth(got[0]), term.VisibleWidth(got[1]); w != row || w != tbl.TotalWidth() {
+			t.Errorf("fill %q: rule is %d cells wide, the row %d, TotalWidth %d", tc.fill, w, row, tbl.TotalWidth())
+		}
 	}
 }
