@@ -3,9 +3,13 @@ package pick
 import (
 	"errors"
 	"io"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mittwald/cli-kit/term"
 )
 
 func TestEditorEditsTheValue(t *testing.T) {
@@ -187,5 +191,252 @@ func TestDrivePlacesTheTerminalCursor(t *testing.T) {
 	_ = drive(l, &renderer{w: &listOut}, fixedSize(80, 24), 0, &scriptedInput{chunks: [][]byte{[]byte("\r")}})
 	if strings.Contains(listOut.String(), "G") {
 		t.Errorf("drive() placed a cursor for a list: %q", listOut.String())
+	}
+}
+
+// The prompt, its subject and the value a field starts with are drawn as
+// plain text, and the value comes back the way it was shown.
+func TestEditorDrawsCallerTextPlain(t *testing.T) {
+	e := newEditor(InputOptions{Prompt: "Name\x1b[2J for %s:\t", Subject: "x\x1b]0;t\x07y\n", Value: "v\u009b2Jw\rz"}, false)
+	if got, want := e.render(80)[0], "Name for xy : vw z"; got != want {
+		t.Errorf("render() = %q, want %q", got, want)
+	}
+	if got, want := e.answer(), "vw z"; got != want {
+		t.Errorf("answer() = %q, want %q", got, want)
+	}
+	// The space a prompt ends in is the caller's and stays.
+	e = newEditor(InputOptions{Prompt: "Password: ", Secret: true}, false)
+	if got, want := e.render(80)[0], "Password: "; got != want {
+		t.Errorf("render() = %q, want %q", got, want)
+	}
+}
+
+// The caret is drawn where the prompt as drawn ends: the subject goes in
+// for the first %s only, in the line and in the count alike.
+func TestEditorCountsThePromptAsItIsDrawn(t *testing.T) {
+	e := newEditor(InputOptions{Prompt: "Rename %s (was %s): ", Subject: "production", Value: "x"}, false)
+	line := e.render(80)[0]
+	if want := "Rename production (was %s): x"; line != want {
+		t.Fatalf("render() = %q, want %q", line, want)
+	}
+	if got, want := e.cursorColumn(80), width(line)+1; got != want {
+		t.Errorf("cursorColumn() = %d, want %d, right behind the value", got, want)
+	}
+}
+
+// What is drawn as one character is one step for the caret and one
+// Backspace, however many code points it is made of.
+func TestEditorStepsOverGraphemeClusters(t *testing.T) {
+	const family = "👨\u200d👩\u200d👧"
+	e := newEditor(InputOptions{Prompt: "> ", Value: "a" + family + "b"}, false)
+	end := e.cursorColumn(80)
+	e.apply(key{kind: keyLeft})
+	e.apply(key{kind: keyLeft})
+	if got, want := e.cursorColumn(80), end-1-width(family); got != want {
+		t.Errorf("two steps left: column %d, want %d, in front of the emoji", got, want)
+	}
+	e.apply(key{kind: keyRight})
+	if got, want := e.cursorColumn(80), end-1; got != want {
+		t.Errorf("a step right: column %d, want %d, behind the emoji", got, want)
+	}
+	e.apply(key{kind: keyBackspace})
+	if got, want := e.answer(), "ab"; got != want {
+		t.Errorf("Backspace behind the emoji left %+q, want %q", got, want)
+	}
+	e.apply(key{kind: keyHome})
+	e.apply(key{kind: keyRight})
+
+	for _, c := range []struct {
+		name, value string
+		keys        []key
+		want        string
+	}{
+		{"Backspace takes a flag whole", "x🇩🇪", []key{{kind: keyBackspace}}, "x"},
+		{"Backspace takes a letter with its accent", "cafe\u0301", []key{{kind: keyBackspace}}, "caf"},
+		{"Delete takes a letter with its accent", "e\u0301x", []key{{kind: keyHome}, {kind: keyDelete}}, "x"},
+		{"typing in front of an accented letter keeps the accent on it", "cafe\u0301", []key{{kind: keyLeft}, {kind: keyRune, rune: 'X'}}, "cafXe\u0301"},
+		{"an accent typed joins the letter before it", "cafe", []key{{kind: keyRune, rune: '\u0301'}, {kind: keyLeft}, {kind: keyRune, rune: '-'}}, "caf-e\u0301"},
+		{"a joiner typed between two emoji makes them one", "👨👩", []key{{kind: keyLeft}, {kind: keyRune, rune: '\u200d'}, {kind: keyBackspace}}, ""},
+	} {
+		e := newEditor(InputOptions{Value: c.value}, false)
+		for _, k := range c.keys {
+			e.apply(k)
+		}
+		if got := e.answer(); got != c.want {
+			t.Errorf("%s: answer() = %+q, want %+q", c.name, got, c.want)
+		}
+	}
+}
+
+// A value longer than the line scrolls with the caret, so what is typed is
+// always on screen, with an ellipsis where text is out of sight.
+func TestEditorScrollsALongValue(t *testing.T) {
+	e := newEditor(InputOptions{Prompt: "URL: ", Value: "https://example.com/a/very/long/path"}, false)
+	check := func(step, wantLine string, wantColumn int) {
+		t.Helper()
+		line := e.render(20)[0]
+		if line != wantLine {
+			t.Errorf("%s: render() = %q, want %q", step, line, wantLine)
+		}
+		if width(line) > 20 {
+			t.Errorf("%s: the line is %d cells wide on 20", step, width(line))
+		}
+		if got := e.cursorColumn(20); got != wantColumn {
+			t.Errorf("%s: cursorColumn() = %d, want %d", step, got, wantColumn)
+		}
+	}
+	check("opened", "URL: …ery/long/path", 20)
+	typeText(e, "XYZ")
+	check("typed at the end", "URL: …/long/pathXYZ", 20)
+	for range 5 {
+		e.apply(key{kind: keyLeft})
+	}
+	check("moved inside the window", "URL: …/long/pathXYZ", 15)
+	e.apply(key{kind: keyHome})
+	check("at the start", "URL: https://exampl…", 6)
+	for range 16 {
+		e.apply(key{kind: keyRight})
+	}
+	check("scrolled right", "URL: …ps://example.…", 20)
+	e.apply(key{kind: keyEnd})
+	for range 30 {
+		e.apply(key{kind: keyBackspace})
+	}
+	check("fits again", "URL: https://e", 15)
+
+	// Wide characters scroll by whole characters and never split.
+	e = newEditor(InputOptions{Prompt: "名前: ", Value: "日本語のテキストを入力する"}, false)
+	for n := 1; n <= 40; n++ {
+		for _, k := range []keyKind{keyEnd, keyLeft, keyLeft, keyHome, keyRight} {
+			e.apply(key{kind: k})
+			line := e.render(n)[0]
+			if width(line) > n {
+				t.Fatalf("width %d: %q is %d cells wide", n, line, width(line))
+			}
+			if column := e.cursorColumn(n); column < 1 || column > n {
+				t.Fatalf("width %d: cursor column %d", n, column)
+			}
+		}
+	}
+
+	// A prompt that fills the line makes room for the field.
+	e = newEditor(InputOptions{Prompt: "A rather long question: ", Value: "answer"}, false)
+	check("long prompt", "A rather lon…answer", 20)
+}
+
+// The clusters around a caret are found from a place nearby. Every answer
+// has to be the one a reading of the whole value gives, at every position
+// of values that mix what joins runes into clusters with what never does.
+func TestClusterLookupAgreesWithTheWholeValue(t *testing.T) {
+	pieces := []string{
+		"a", "b", " ", "-", "é", "e\u0301", "\u0301", "界", "한", "\u1100\u1161\u11a8",
+		"👨\u200d👩\u200d👧", "\u200d", "👍🏽", "🏽", "🇩🇪", "\U0001f1e9", "1\ufe0f\u20e3", "\ufe0f",
+		strings.Repeat("\u0301", 40), strings.Repeat("界", 70), strings.Repeat("ab", 20),
+	}
+	random := rand.New(rand.NewPCG(1, 2)) //nolint:gosec // a fixed seed keeps the test repeatable; nothing here is secret
+	for range 1000 {
+		var b strings.Builder
+		for range 1 + random.IntN(12) {
+			b.WriteString(pieces[random.IntN(len(pieces))])
+		}
+		value := []rune(b.String())
+		bounds := clusterBounds(value)
+		for caret := 0; caret <= len(value); caret++ {
+			before, after, end := 0, len(value), len(value)
+			for _, bound := range bounds {
+				if bound < caret {
+					before = bound
+				}
+			}
+			for _, bound := range slices.Backward(bounds) {
+				if bound > caret {
+					after = bound
+				}
+				if bound >= caret {
+					end = bound
+				}
+			}
+			if got := clusterBefore(value, caret); got != before {
+				t.Fatalf("clusterBefore(%q, %d) = %d, want %d", string(value), caret, got, before)
+			}
+			if got := clusterAfter(value, caret); got != after {
+				t.Fatalf("clusterAfter(%q, %d) = %d, want %d", string(value), caret, got, after)
+			}
+			if got := clusterEnd(value, caret); got != end {
+				t.Fatalf("clusterEnd(%q, %d) = %d, want %d", string(value), caret, got, end)
+			}
+		}
+	}
+}
+
+// A pasted value arrives rune by rune. Reading the whole value for each of
+// them took seconds for a few thousand runes and left the prompt dead
+// meanwhile; the time a paste takes has to grow with its length, not with
+// the square of it.
+func TestEditorTakesALongPaste(t *testing.T) {
+	const runes, edits = 40000, 4000
+	paste := func(e *editor, n int) {
+		for i := range n {
+			e.apply(key{kind: keyRune, rune: rune('a' + i%26)})
+		}
+	}
+	start := time.Now()
+
+	e := newEditor(InputOptions{Prompt: "Token: "}, false)
+	paste(e, runes)
+	if got := len(e.value); got != runes {
+		t.Fatalf("value holds %d runes, want %d", got, runes)
+	}
+	// In front of what is there, where every rune has text behind it.
+	e.apply(key{kind: keyHome})
+	paste(e, edits)
+	// And taken out again from the end, one character at a time.
+	e.apply(key{kind: keyEnd})
+	for range edits {
+		e.apply(key{kind: keyBackspace})
+	}
+	if got := len(e.value); got != runes {
+		t.Fatalf("value holds %d runes after the deletions, want %d", got, runes)
+	}
+
+	// The first paste alone took more than a minute when every key read
+	// the whole value.
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Errorf("pasting %d runes and editing %d took %v", runes, edits, elapsed)
+	}
+}
+
+// A value far longer than the line is laid out in a time that grows with
+// its length. Scrolling to the caret summed the width of what was left at
+// every cluster it passed, which took seconds for a long value and froze
+// the prompt on its first draw.
+func TestEditorLaysOutALongValue(t *testing.T) {
+	const runes = 400000
+	e := newEditor(InputOptions{Prompt: "Token: ", Value: strings.Repeat("x", runes)}, false)
+	start := time.Now()
+
+	// The caret is at the end: the line shows the end of the value.
+	parts, column := e.layout(80)
+	if shown := parts[len(parts)-1].text; shown != term.Ellipsis+strings.Repeat("x", 71) {
+		t.Errorf("value scrolled to its end is drawn as %q", shown)
+	}
+	if column != 80 {
+		t.Errorf("cursor column = %d, want 80", column)
+	}
+	// And back at the start, its beginning.
+	e.apply(key{kind: keyHome})
+	parts, column = e.layout(80)
+	if shown := parts[len(parts)-1].text; shown != strings.Repeat("x", 72)+term.Ellipsis {
+		t.Errorf("value scrolled to its start is drawn as %q", shown)
+	}
+	if column != 8 {
+		t.Errorf("cursor column = %d, want 8", column)
+	}
+	e.apply(key{kind: keyEnd})
+	e.layout(80)
+
+	// The first layout alone took most of a minute.
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Errorf("laying out %d runes three times took %v", runes, elapsed)
 	}
 }

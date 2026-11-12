@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	gokeyring "github.com/zalando/go-keyring"
 )
@@ -72,4 +73,55 @@ func TestGuardTestKeyring(t *testing.T) {
 	if err := (Keyring{Service: "cli-kit-test"}).Set("alice", "pw"); err != nil {
 		t.Errorf("Set with go-keyring's mock = %v", err)
 	}
+}
+
+// A keyring that does not answer, such as one waiting for an unlock dialog
+// nobody sees, is given up on when a Timeout is set, and looks unavailable.
+func TestKeyringTimeout(t *testing.T) {
+	release := make(chan struct{})
+	block := func() error { <-release; return errors.New("answered too late") }
+	keyringGet = func(string, string) (string, error) { return "late", block() }
+	keyringSet = func(string, string, string) error { return block() }
+	keyringDelete = func(string, string) error { return block() }
+	t.Cleanup(func() {
+		close(release)
+		keyringGet, keyringSet, keyringDelete = gokeyring.Get, gokeyring.Set, gokeyring.Delete
+	})
+
+	k := Keyring{Service: "example-tool", Timeout: 20 * time.Millisecond}
+	calls := map[string]func() error{
+		"Get":    func() error { _, err := k.Get("alice"); return err },
+		"Set":    func() error { return k.Set("alice", "hunter2") },
+		"Delete": func() error { return k.Delete("alice") },
+	}
+	for name, call := range calls {
+		done := make(chan error, 1)
+		go func() { done <- call() }()
+		select {
+		case err := <-done:
+			if !errors.Is(err, ErrKeyringTimeout) || errors.Is(err, ErrNotFound) {
+				t.Errorf("%s = %v, want ErrKeyringTimeout and not ErrNotFound", name, err)
+			} else if !strings.Contains(err.Error(), `"example-tool"`) || containsSecret(err, "hunter2") {
+				t.Errorf("%s: error %q should name the service and no secret", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s still waits for the keyring", name)
+		}
+	}
+
+	// A Fallback moves on, as with a keyring that is not there.
+	files := &Memory{}
+	store := Fallback(k, files)
+	if err := store.Set("alice", "hunter2"); err != nil {
+		t.Fatalf("Fallback Set = %v", err)
+	}
+	if got, err := store.Get("alice"); err != nil || got != "hunter2" {
+		t.Errorf("Fallback Get = %q, %v", got, err)
+	}
+}
+
+// A keyring that answers in time is not affected by a Timeout.
+func TestKeyringTimeoutLeavesAnswersAlone(t *testing.T) {
+	useMockKeyring(t)
+	exerciseStore(t, Keyring{Service: "example-tool", Timeout: time.Minute})
 }

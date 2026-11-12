@@ -67,6 +67,13 @@ func ExampleVersionedChecksums() {
 	// Output: tool_1.2.3_checksums.txt
 }
 
+func ExampleDefaultAssets() {
+	name := selfupdate.DefaultAssets("tool")(selfupdate.Release{Tag: "v1.2.3"},
+		selfupdate.Platform{OS: "linux", Arch: "amd64"})
+	fmt.Println(name)
+	// Output: tool_1.2.3_linux_amd64.tar.gz
+}
+
 func ExampleVersionedAssets() {
 	name := selfupdate.VersionedAssets("tool")(selfupdate.Release{Tag: "v1.2.3"},
 		selfupdate.Platform{OS: "linux", Arch: "arm", Arm: "7"})
@@ -75,6 +82,10 @@ func ExampleVersionedAssets() {
 }
 
 func ExampleCompare() {
-	fmt.Println(selfupdate.Compare("v1.10.0", "v1.9.0"), selfupdate.Compare("1.0.0-rc.1", "1.0.0"))
-	// Output: 1 -1
+	fmt.Println(
+		selfupdate.Compare("v1.10.0", "v1.9.0"),
+		selfupdate.Compare("1.0.0-rc.1", "1.0.0"),
+		selfupdate.Compare("v1.2.3-5-gabc1234", "v1.2.3"), // "git describe", five commits after v1.2.3
+	)
+	// Output: 1 -1 1
 }

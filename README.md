@@ -30,13 +30,13 @@ compiled into your binary.
 | [`term`](https://pkg.go.dev/github.com/mittwald/cli-kit/term) | Terminal detection and size, the `--color` mode with `NO_COLOR` and `TERM=dumb`, visible text width, truncation, padding, word wrapping, OSC 8 hyperlinks, and untrusted output made safe to show |
 | [`theme`](https://pkg.go.dev/github.com/mittwald/cli-kit/theme) | SGR styles, the color roles the other packages paint with, and unified diffs painted the way git paints them |
 | [`pick`](https://pkg.go.dev/github.com/mittwald/cli-kit/pick) | Interactive list selection with filtering, views and ranges, switches, and line-edited text and secret input |
-| [`live`](https://pkg.go.dev/github.com/mittwald/cli-kit/live) | Blocks of lines redrawn in place, detail/result output separation, and cursor restore on exit, panic and signals |
+| [`live`](https://pkg.go.dev/github.com/mittwald/cli-kit/live) | Blocks of lines redrawn in place, detail/result output separation, and cursor and terminal restore on exit, panic and signals |
 | [`progress`](https://pkg.go.dev/github.com/mittwald/cli-kit/progress) | A gradient progress bar with a stall countdown that steps aside for log lines |
-| [`table`](https://pkg.go.dev/github.com/mittwald/cli-kit/table) | Tables in plain, framed and Markdown styles, and CSV/TSV records |
+| [`table`](https://pkg.go.dev/github.com/mittwald/cli-kit/table) | Tables in plain, framed and Markdown styles, and CSV/TSV records, with spreadsheet formulas escaped on request |
 | [`format`](https://pkg.go.dev/github.com/mittwald/cli-kit/format) | An `--output` flag value and JSON/YAML writers driven by the same struct tags |
 | [`ics`](https://pkg.go.dev/github.com/mittwald/cli-kit/ics) | An RFC 5545 iCalendar writer |
 | [`secret`](https://pkg.go.dev/github.com/mittwald/cli-kit/secret) | Credentials from flags, files, environment, stdin, the OS keyring or a hidden prompt |
-| [`selfupdate`](https://pkg.go.dev/github.com/mittwald/cli-kit/selfupdate) | Checksum-verified self-updates from GitHub Releases or a GitLab package registry |
+| [`selfupdate`](https://pkg.go.dev/github.com/mittwald/cli-kit/selfupdate) | Self-updates from GitHub Releases or a GitLab package registry, checked against the release's checksums file |
 | [`cobrax`](https://pkg.go.dev/github.com/mittwald/cli-kit/cobrax) | Cobra helpers: `--color`, enum flags, hardened and cached shell completion, version command |
 | [`buildinfo`](https://pkg.go.dev/github.com/mittwald/cli-kit/buildinfo) | Version, commit and date from `-ldflags` or the Go build information |
 
@@ -54,9 +54,9 @@ width := term.Columns(os.Stdout, 80)
 fmt.Println(term.Truncate(longLine, width))
 
 th := theme.Active().For(os.Stdout) // theme.Plain where stdout takes no color
-fmt.Print(th.PaintDiff(diff))
-fmt.Println(term.Sanitize(jobLog)) // its colors kept, every other escape gone
-fmt.Println(term.PlainLine(name))  // one line, no escape sequence, no color
+fmt.Print(th.PaintDiff(term.Plain(diff))) // a diff from elsewhere: made plain first
+fmt.Println(term.Sanitize(jobLog))        // its colors kept, every other escape gone
+fmt.Println(term.PlainLine(name))         // one line, no escape sequence, no color
 ```
 
 ### Tables and structured output
@@ -100,7 +100,9 @@ token, err := pick.Input(os.Stdin, os.Stderr, pick.InputOptions{Prompt: "Token: 
 
 Type to filter, arrows and paging keys to move, Enter to choose. Lists can
 offer views (Tab), ranges, typed answers and per-column truncation; see the
-package documentation.
+package documentation. Text handed to a prompt is shown as plain text, so a
+name from elsewhere cannot carry an escape sequence to the terminal, and the
+terminal is restored when the prompt ends, also by a signal.
 
 ### Live output and progress
 
@@ -120,6 +122,12 @@ bar.Finish(true)
 bar.Clear()
 ```
 
+The signal handler shows hidden cursors again before the process ends, and
+runs whatever `live.OnRestore` registered, which is how the prompts of `pick`
+and `secret` put the terminal back into its mode. The bar follows the width
+of the terminal as it changes, holds a log line back until its newline
+arrives, and uses 24-bit color only where `COLORTERM` announces it.
+
 ### Credentials
 
 ```go
@@ -135,6 +143,10 @@ token, from, err := r.Resolve() // file flag, env, piped stdin, store, then a hi
 // When it rejects it: r.Forget(from), then resolve again.
 ```
 
+A Resolver reads a secret from stdin whenever stdin is not a terminal. In a
+command that may run inside a loop reading stdin, in a Git hook or over ssh
+without a terminal, set `StdinBusy` so that stdin is left alone.
+
 ### Self-update
 
 ```go
@@ -143,8 +155,13 @@ u := &selfupdate.Updater{
 	Current: buildinfo.Get().Version,
 	Asset:   selfupdate.VersionedAssets("tool"),
 }
-res, err := u.Update(ctx, false) // verifies checksums.txt; refuses package-managed installs
+res, err := u.Update(ctx, false) // checks the archive against checksums.txt; refuses package-managed installs
 ```
+
+The checksum detects a corrupted or altered download. It does not protect
+against someone who can write the release's files, because the checksums
+file is published in the same place. The archive must hold an executable
+for the platform, and a credential is only sent to an `https` API address.
 
 ### Shell completion and version
 

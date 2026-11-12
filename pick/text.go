@@ -3,6 +3,8 @@ package pick
 import (
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mittwald/cli-kit/term"
 	"github.com/mittwald/cli-kit/theme"
@@ -26,6 +28,91 @@ func width(s string) int { return term.VisibleWidth(s) }
 
 // pad fills s with spaces to n cells.
 func pad(s string, n int) string { return term.PadRight(s, n) }
+
+// plainLine makes text a caller handed in safe to draw within one line. It is
+// term.PlainLine without the folding of white space: escape sequences and
+// control characters go, a line break or a tab becomes a space, and the
+// characters that reorder text on screen are dropped, but every space stays
+// where it is. The space a prompt ends in and the spaces inside the value of
+// a text field are the caller's, and term.PlainLine would trim the one and
+// fold the others.
+//
+// Every string a prompt draws passes through here once, where it enters, so
+// the widths the layout counts are the widths the terminal draws.
+func plainLine(s string) string {
+	if printable(s) {
+		return s
+	}
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case lineBreak(r) || r == '\t':
+			return ' '
+		case bidiControl(r):
+			return -1
+		}
+		return r
+	}, strings.ToValidUTF8(s, "\ufffd"))
+	// Without a line break left in it, what term.Plain returns is one line.
+	return term.Plain(s)
+}
+
+// plainLines is plainLine for every string of a slice, in a slice of its
+// own, so the caller's is never written to.
+func plainLines(lines []string) []string {
+	if lines == nil {
+		return nil
+	}
+	plain := make([]string, len(lines))
+	for i, line := range lines {
+		plain[i] = plainLine(line)
+	}
+	return plain
+}
+
+// printable reports whether s is drawn as it is written: valid UTF-8 made of
+// nothing but graphic characters and spaces. It is the way past plainLine for
+// the text that needs nothing done to it, which is nearly all of it.
+func printable(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c >= 0x7f {
+			return printableRunes(s)
+		}
+	}
+	return true
+}
+
+func printableRunes(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsPrint(r) && !unicode.Is(unicode.Zs, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// lineBreak reports whether r breaks a line: LF, VT, FF, CR, NEL, or the
+// Unicode line and paragraph separators. It is the set term.PlainLine turns
+// into spaces.
+func lineBreak(r rune) bool {
+	return (r >= '\n' && r <= '\r') || r == '\u0085' || r == '\u2028' || r == '\u2029'
+}
+
+// bidiControl reports whether r is an explicit bidirectional formatting
+// character: the embeddings and overrides U+202A to U+202E, and the isolates
+// U+2066 to U+2069. It is the set term.PlainLine drops.
+func bidiControl(r rune) bool {
+	return (r >= '\u202a' && r <= '\u202e') || (r >= '\u2066' && r <= '\u2069')
+}
+
+// typable reports whether r can be part of what is typed into a prompt: any
+// character plainLine would leave alone. A control character pasted into a
+// filter or a text field is dropped rather than drawn.
+func typable(r rune) bool {
+	return !unicode.IsControl(r) && !lineBreak(r) && !bidiControl(r)
+}
 
 // cut shortens s to n cells, marking the cut with an ellipsis. Unlike
 // term.Truncate, a width of 0 or less leaves nothing: a prompt line has to fit
@@ -115,10 +202,19 @@ func choiceParts(text string, style theme.Style, th theme.Theme) []styledText {
 	return append(parts, styledText{text[last:], style})
 }
 
-// drawParts writes the parts in their styles, cut to n cells in the order
-// they read.
-func drawParts(parts []styledText, n int, p painter) string {
+// partsText is the parts as plain text, the way they read once drawn.
+func partsText(parts []styledText) string {
 	var b strings.Builder
+	for _, part := range parts {
+		b.WriteString(part.text)
+	}
+	return b.String()
+}
+
+// cutParts shortens the parts to n cells in the order they read, dropping
+// the ones the cut leaves nothing of.
+func cutParts(parts []styledText, n int) []styledText {
+	fitted := make([]styledText, 0, len(parts))
 	left := n
 	for _, part := range parts {
 		if left <= 0 {
@@ -126,7 +222,17 @@ func drawParts(parts []styledText, n int, p painter) string {
 		}
 		text := cut(part.text, left)
 		left -= width(text)
-		b.WriteString(p.paint(part.style, text))
+		fitted = append(fitted, styledText{text, part.style})
+	}
+	return fitted
+}
+
+// drawParts writes the parts in their styles, cut to n cells in the order
+// they read.
+func drawParts(parts []styledText, n int, p painter) string {
+	var b strings.Builder
+	for _, part := range cutParts(parts, n) {
+		b.WriteString(p.paint(part.style, part.text))
 	}
 	return b.String()
 }

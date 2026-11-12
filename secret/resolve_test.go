@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -105,10 +106,191 @@ func TestResolveTrimSpace(t *testing.T) {
 	}
 }
 
+// A line longer than MaxLen is an error, never a secret cut short, and
+// its rest is not left for the next reader to take for a secret.
 func TestResolveMaxLen(t *testing.T) {
-	r := Resolver{Stdin: stdinFile(t, strings.Repeat("x", 100)), MaxLen: 10}
-	if got, _, err := r.Resolve(); err != nil || got != strings.Repeat("x", 10) {
-		t.Fatalf("Resolve = %q, %v", got, err)
+	long := strings.Repeat("x", 100)
+	r := Resolver{Name: "token", Stdin: stdinFile(t, long+"\nnext\n"), MaxLen: 10}
+	got, source, err := r.Resolve()
+	if !errors.Is(err, ErrTooLong) || got != "" || source != SourceNone {
+		t.Fatalf("Resolve = %q, %v, %v; want ErrTooLong", got, source, err)
+	}
+	if want := "the token in stdin is longer than 10 bytes"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
+	file := writeFile(t, long)
+	r = Resolver{Name: "token", File: file, MaxLen: 10, Prompt: noPrompt(t)}
+	if _, _, err := r.Resolve(); !errors.Is(err, ErrTooLong) || err.Error() != "the token in "+file+" is longer than 10 bytes" {
+		t.Errorf("Resolve from a file = %v, want ErrTooLong naming the file", err)
+	}
+	r = Resolver{File: writeFile(t, strings.Repeat("x", DefaultMaxLen+1)+"\n")}
+	if _, _, err := r.Resolve(); !errors.Is(err, ErrTooLong) {
+		t.Errorf("Resolve with the default limit = %v, want ErrTooLong", err)
+	}
+
+	// The limit counts the secret, not its line ending or a byte order mark.
+	exact := strings.Repeat("x", 10)
+	for _, content := range []string{exact, exact + "\n", exact + "\r\n", exact + "\r", "\xef\xbb\xbf" + exact + "\r\n"} {
+		r := Resolver{Stdin: stdinFile(t, content), MaxLen: 10}
+		if got, _, err := r.Resolve(); err != nil || got != exact {
+			t.Errorf("Resolve of %q = %q, %v; want the %d bytes", content, got, err, len(exact))
+		}
+	}
+	// A byte order mark is longer than a short limit: its bytes do not count
+	// while they may still become one, and count once they did not.
+	const bom = "\xef\xbb\xbf"
+	for _, tc := range []struct {
+		content, want string
+		tooLong       bool
+	}{
+		{content: bom + "x\n", want: "x"},
+		{content: bom + "x", want: "x"},
+		{content: bom + "x\r\n", want: "x"},
+		{content: "\xef", want: "\xef"},
+		{content: bom + "xy\n", tooLong: true},
+		{content: "\xef\xbbx\n", tooLong: true},
+		{content: "\xef\xbb\n", tooLong: true},
+		{content: "\xef\xbb", tooLong: true},
+		{content: "\xefx", tooLong: true},
+	} {
+		r := Resolver{Stdin: stdinFile(t, tc.content), MaxLen: 1}
+		got, _, err := r.Resolve()
+		if tc.tooLong {
+			if !errors.Is(err, ErrTooLong) {
+				t.Errorf("Resolve of %q with MaxLen 1 = %q, %v; want ErrTooLong", tc.content, got, err)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("Resolve of %q with MaxLen 1 = %q, %v; want %q", tc.content, got, err, tc.want)
+		}
+	}
+	r = Resolver{Stdin: stdinFile(t, exact+"\rx\n"), MaxLen: 10}
+	if _, _, err := r.Resolve(); !errors.Is(err, ErrTooLong) {
+		t.Errorf("Resolve of a line with a CR inside = %v, want ErrTooLong", err)
+	}
+}
+
+// A byte order mark is no part of the secret, and a file in an encoding
+// the secret cannot be read from is refused instead of handed on as bytes.
+func TestResolveInputThatIsNoPlainText(t *testing.T) {
+	for _, trim := range []bool{false, true} {
+		r := Resolver{File: writeFile(t, "\xef\xbb\xbftok123\r\n"), TrimSpace: trim}
+		if got, source, err := r.Resolve(); err != nil || got != "tok123" || source != SourceFile {
+			t.Errorf("TrimSpace %v: Resolve of a file with a byte order mark = %q, %v, %v", trim, got, source, err)
+		}
+		r = Resolver{Stdin: stdinFile(t, "\xef\xbb\xbftok123\n"), TrimSpace: trim}
+		if got, _, err := r.Resolve(); err != nil || got != "tok123" {
+			t.Errorf("TrimSpace %v: Resolve of a stdin with a byte order mark = %q, %v", trim, got, err)
+		}
+	}
+	// Only the mark, as an editor saves an empty file: no secret.
+	r := Resolver{File: writeFile(t, "\xef\xbb\xbf\n")}
+	if _, _, err := r.Resolve(); !errors.Is(err, ErrEmpty) {
+		t.Errorf("Resolve of a file holding only a byte order mark = %v, want ErrEmpty", err)
+	}
+
+	utf16le := "\xff\xfet\x00o\x00k\x00\r\x00\n\x00" // what Windows PowerShell's > writes
+	utf16be := "\xfe\xff\x00t\x00o\x00k\x00\n"
+	for name, tc := range map[string]struct{ content, want string }{
+		"UTF-16 little endian": {utf16le, "is UTF-16 text; save it as UTF-8"},
+		"UTF-16 big endian":    {utf16be, "is UTF-16 text; save it as UTF-8"},
+		"NUL byte":             {"t\x00o\x00k\x00\n", "contains a NUL byte; it has to be a line of text"},
+		"long UTF-16":          {"\xff\xfe" + strings.Repeat("t\x00", DefaultMaxLen), "is UTF-16 text; save it as UTF-8"},
+	} {
+		file := writeFile(t, tc.content)
+		r := Resolver{Name: "token", File: file, TrimSpace: true, Prompt: noPrompt(t)}
+		got, source, err := r.Resolve()
+		if !errors.Is(err, ErrNotText) || got != "" || source != SourceNone {
+			t.Errorf("%s: Resolve = %q, %v, %v; want ErrNotText", name, got, source, err)
+			continue
+		}
+		if want := "the token in " + file + " " + tc.want; err.Error() != want {
+			t.Errorf("%s: error = %q, want %q", name, err, want)
+		}
+		r = Resolver{Name: "token", Stdin: stdinFile(t, tc.content), Prompt: noPrompt(t)}
+		if _, _, err := r.Resolve(); !errors.Is(err, ErrNotText) || !strings.HasPrefix(err.Error(), "the token in stdin ") {
+			t.Errorf("%s: Resolve from stdin = %v, want ErrNotText", name, err)
+		}
+	}
+}
+
+// A store that cannot be read does not keep the user from typing the
+// secret; and when nobody can be asked, the store's failure is not lost.
+func TestResolveAsksWhenTheStoreFails(t *testing.T) {
+	insecure := privateDir(t)
+	if err := os.WriteFile(filepath.Join(insecure, "default"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noHome := errors.New("locate the home directory: $HOME is not defined")
+	for name, tc := range map[string]struct {
+		store Store
+		is    error
+	}{
+		"keyring without fallback":        {failing{}, errUnavailable},
+		"both stores failing":             {Fallback(failing{}, Unavailable(noHome)), noHome},
+		"a file the store refuses":        {Fallback(&Memory{}, &FileStore{Dir: insecure}), ErrInsecureFile},
+		"an account the file store lacks": {Fallback(failing{}, &FileStore{Dir: privateDir(t)}), errUnavailable},
+	} {
+		if errors.Is(tc.is, ErrInsecureFile) && runtime.GOOS == "windows" {
+			continue // POSIX permissions
+		}
+		account := "default"
+		if name == "an account the file store lacks" {
+			account = "https://api.example.com/"
+		}
+		var asked []Request
+		r := Resolver{Name: "token", Account: account, Store: tc.store, Stdin: stdinFile(t, ""), Prompt: answers(&asked, "typed")}
+		got, source, err := r.Resolve()
+		if err != nil || got != "typed" || source != SourcePrompt || len(asked) != 1 {
+			t.Errorf("%s: Resolve = %q, %v, %v after %d questions; want the prompt's answer", name, got, source, err, len(asked))
+		}
+
+		// Nobody to ask: both reasons are in the error.
+		r.Env, r.Prompt = "EXAMPLE_TOKEN", func(Request) (string, error) { return "", ErrNoSource }
+		_, source, err = r.Resolve()
+		if !errors.Is(err, ErrNoSource) || !errors.Is(err, tc.is) || source != SourceNone {
+			t.Errorf("%s: Resolve without a terminal = %v, %v; want ErrNoSource and the store's failure", name, source, err)
+			continue
+		}
+		const start = "no token available: set $EXAMPLE_TOKEN, pipe one to stdin, or run this on a terminal; the stored token could not be read: "
+		if !strings.HasPrefix(err.Error(), start) {
+			t.Errorf("%s: error = %q, want it to start with %q", name, err, start)
+		}
+
+		// Any other way the prompt fails keeps the store's failure as well.
+		r.Prompt = answers(new([]Request), "")
+		if _, _, err := r.Resolve(); !errors.Is(err, ErrEmpty) || !errors.Is(err, tc.is) {
+			t.Errorf("%s: Resolve with an empty answer = %v; want ErrEmpty and the store's failure", name, err)
+		}
+		// Lookup never asks, so it reports the store.
+		if _, _, err := r.Lookup(); !errors.Is(err, tc.is) || errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: Lookup = %v, want the store's failure", name, err)
+		}
+	}
+}
+
+// What follows the flag is not repeated until it is known to name a file:
+// a user who passes the password where its file belongs must not find it
+// in the output or a log.
+func TestResolveDoesNotRepeatAFileThatDoesNotOpen(t *testing.T) {
+	const mistake = "hunter2-the-real-password"
+	for _, r := range []Resolver{
+		{Name: "password", File: mistake, FileFlag: "--password-file"},
+		{Name: "password", File: mistake},
+		{Name: "password", File: mistake + "/x"},
+		{Name: "password", File: mistake + "\x00"},
+		{Name: "password", File: strings.Repeat(mistake, 400)},
+	} {
+		for name, call := range map[string]func() (string, Source, error){"Resolve": r.Resolve, "Lookup": r.Lookup} {
+			_, _, err := call()
+			if err == nil {
+				t.Fatalf("%s with File %q succeeded", name, r.File)
+			}
+			if containsSecret(err, mistake) {
+				t.Errorf("%s: error %q repeats the File argument", name, err)
+			}
+		}
 	}
 }
 
@@ -203,7 +385,10 @@ func TestResolveWithoutAnySourceNamesTheOptions(t *testing.T) {
 // still match the package's sentinel errors.
 func TestResolveMessages(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
-	_, openErr := os.Open(missing) // its wording differs between systems
+	_, openErr := os.Open(missing)
+	// What is wrong with the file, which is worded differently between
+	// systems, without the file's path.
+	noSuchFile := strings.TrimPrefix(openErr.Error(), "open "+missing+": ")
 	empty := writeFile(t, "\n")
 	for _, tc := range []struct {
 		name string
@@ -212,7 +397,9 @@ func TestResolveMessages(t *testing.T) {
 		is   error
 	}{
 		{"missing file", Resolver{Name: "password", File: missing},
-			"reading password file: " + openErr.Error(), fs.ErrNotExist},
+			"cannot read the password file: " + noSuchFile, fs.ErrNotExist},
+		{"missing file named by a flag", Resolver{Name: "password", File: missing, FileFlag: "--password-file"},
+			"cannot read the file named by --password-file: " + noSuchFile, fs.ErrNotExist},
 		{"empty file", Resolver{Name: "password", File: empty}, "no password found in " + empty, ErrEmpty},
 		{"dash with busy stdin", Resolver{Name: "password", File: "-", FileFlag: "--password-file", StdinBusy: true},
 			"--password-file - reads the password from stdin, which is already being read for the input; name a file instead", nil},

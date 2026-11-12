@@ -10,7 +10,8 @@ import (
 
 // Toggle is one switch: what it is called, the two words its positions stand
 // for, and where it starts. On and Off are the caller's vocabulary, such as
-// "enabled" and "disabled"; they default to "yes" and "no".
+// "enabled" and "disabled"; they default to "yes" and "no". Label, On and
+// Off are shown as plain single-line text, as everything a prompt draws is.
 type Toggle struct {
 	Label string
 	On    string
@@ -18,7 +19,9 @@ type Toggle struct {
 	Value bool
 }
 
-// ToggleOptions configures one set of switches.
+// ToggleOptions configures one set of switches. Title, Subject and Note are
+// shown as plain single-line text: escape sequences and control characters
+// in them are dropped, and a line break or a tab becomes a space.
 type ToggleOptions struct {
 	// Title is the question, with one %s where Subject goes.
 	Title string
@@ -50,14 +53,17 @@ func Toggles(in, out *os.File, opts ToggleOptions) ([]bool, error) {
 }
 
 // Box is one row of a checklist: what it is called, an optional note on what
-// ticking it means, and whether it starts ticked.
+// ticking it means, and whether it starts ticked. Label and Note are shown
+// as plain single-line text, as everything a prompt draws is.
 type Box struct {
 	Label   string
 	Note    string
 	Checked bool
 }
 
-// ChecklistOptions configures one checklist.
+// ChecklistOptions configures one checklist. Title, Subject and Note are
+// shown as plain single-line text: escape sequences and control characters
+// in them are dropped, and a line break or a tab becomes a space.
 type ChecklistOptions struct {
 	// Title is the question, with one %s where Subject goes.
 	Title string
@@ -131,7 +137,9 @@ type switches struct {
 	cursor     int
 	// top is the first row drawn and visible how many are, so the block
 	// fits on the terminal; visible is all rows until resize says less.
+	// frame is what the block keeps of the lines around the rows.
 	top, visible int
+	frame        frame
 	nested       bool
 	checklist    bool
 	color        bool
@@ -140,21 +148,24 @@ type switches struct {
 
 func newSwitches(opts switchOptions, color bool) *switches {
 	s := &switches{
-		title:     opts.title,
-		subject:   opts.subject,
-		note:      opts.note,
-		rows:      append([]switchRow(nil), opts.rows...),
+		title:     plainLine(opts.title),
+		subject:   plainLine(opts.subject),
+		note:      plainLine(opts.note),
+		rows:      make([]switchRow, len(opts.rows)),
 		initial:   make([]bool, len(opts.rows)),
 		nested:    opts.nested,
 		checklist: opts.checklist,
 		color:     color,
 		theme:     theme.Active(),
-		visible:   len(opts.rows),
 	}
 	for i, row := range opts.rows {
+		row.label, row.note = plainLine(row.label), plainLine(row.note)
+		row.on, row.off = plainLine(row.on), plainLine(row.off)
+		s.rows[i] = row
 		s.initial[i] = row.value
 		s.labelWidth = max(s.labelWidth, width(row.label))
 	}
+	s.resize(0, 0)
 	if opts.initial > 0 && opts.initial < len(s.rows) {
 		s.cursor = opts.initial
 	}
@@ -169,35 +180,17 @@ func (s *switches) values() []bool {
 	return values
 }
 
-// chrome is how many lines the block spends on something other than rows:
-// the title, the note where there is one, the blank lines around the rows,
-// the key line, and the position line when not all rows fit.
-func (s *switches) chrome(windowed bool) int {
-	lines := 4
-	if s.note != "" {
-		lines++
-	}
-	if windowed {
-		lines++
-	}
-	return lines
-}
-
-// resize fits the rows to the terminal height, as the list does: a block
+// resize fits the block to the terminal height, as the list does: a block
 // taller than the terminal would scroll, and the in-place redraw would then
-// repaint the wrong lines. Rows that do not fit scroll with the cursor.
-func (s *switches) resize(maxVisible, height int) {
-	all := len(s.rows)
-	fits := (height <= 0 || all <= height-s.chrome(false)-1) && (maxVisible <= 0 || all <= maxVisible)
-	if fits {
-		s.visible = all
-	} else {
-		s.visible = min(visibleRows(maxVisible, height, s.chrome(true)), all)
-	}
+// repaint the wrong lines. Rows that do not fit scroll with the cursor, a
+// position line saying where it is among them.
+// A set of switches has no cap on its rows the way a list has, so the
+// terminal alone decides.
+func (s *switches) resize(_, height int) {
+	s.frame = fitFrame(height, len(s.rows), s.note != "", false)
+	s.visible = s.frame.rows
 	s.scrollToCursor()
 }
-
-func (s *switches) windowed() bool { return s.visible < len(s.rows) }
 
 func (s *switches) scrollToCursor() {
 	if s.cursor < s.top {
@@ -281,20 +274,28 @@ func (s *switches) render(n int) []string {
 		n = 80
 	}
 	p := s.painter()
-	lines := make([]string, 0, s.visible+s.chrome(true))
-	lines = append(lines, drawParts(titleParts(s.title, s.subject, s.theme), n, p))
-	if s.note != "" {
+	lines := make([]string, 0, s.visible+6)
+	if s.frame.title {
+		lines = append(lines, drawParts(titleParts(s.title, s.subject, s.theme), n, p))
+	}
+	if s.frame.note {
 		lines = append(lines, p.paint(s.theme.Muted, cut(s.note, n)))
 	}
-	lines = append(lines, "")
+	if s.frame.gapAbove {
+		lines = append(lines, "")
+	}
 	for i := s.top; i < min(s.top+s.visible, len(s.rows)); i++ {
 		lines = append(lines, s.renderRow(i, n))
 	}
-	lines = append(lines, "")
-	if s.windowed() {
+	if s.frame.gapBelow {
+		lines = append(lines, "")
+	}
+	if s.frame.position {
 		lines = append(lines, p.paint(s.theme.Muted, cut(fmt.Sprintf("%d of %d", s.cursor+1, len(s.rows)), n)))
 	}
-	lines = append(lines, p.paint(s.theme.Muted, s.hint(n)))
+	if s.frame.hint {
+		lines = append(lines, p.paint(s.theme.Muted, s.hint(n)))
+	}
 	return lines
 }
 

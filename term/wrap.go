@@ -14,8 +14,10 @@ import "strings"
 // spaces, and a line Wrap starts has indent alone. A word wider than the
 // room left for it gets a line of its own and stays whole. Widths are
 // visible widths, as [VisibleWidth] measures them, so escape sequences take
-// up none. A width of 0 or less, what [Size] reports for anything but a
-// terminal, breaks nothing and only indents.
+// up none, and a tab takes up the cells to the next tab stop from where its
+// word stands on the line; a tab is part of a word and no place to break. A
+// width of 0 or less, what [Size] reports for anything but a terminal, breaks
+// nothing and only indents.
 func Wrap(s string, width int, indent string) string {
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
@@ -53,9 +55,8 @@ func wrapLine(line string, width int, indent string) string {
 		}
 		word := rest[:wordEnd(rest)]
 		rest = rest[len(word):]
-		wordWidth := VisibleWidth(word)
 		switch {
-		case wordWidth == 0:
+		case WidthAt(word, 0) == 0:
 			// Nothing to see: it stays where it is and cannot break the line.
 			b.WriteString(word)
 			pending = spaces
@@ -65,7 +66,7 @@ func wrapLine(line string, width int, indent string) string {
 			// would without it.
 			b.WriteString(strings.Repeat(" ", spaces))
 			column += spaces
-		case column+spaces+wordWidth > width:
+		case column+spaces+WidthAt(word, column+spaces) > width:
 			b.WriteString("\n" + indent)
 			column = VisibleWidth(indent)
 		default:
@@ -73,7 +74,9 @@ func wrapLine(line string, width int, indent string) string {
 			column += spaces
 		}
 		b.WriteString(word)
-		column += wordWidth
+		// A word with a tab in it is as wide as the column it starts at
+		// makes it.
+		column += WidthAt(word, column)
 		first = false
 	}
 }

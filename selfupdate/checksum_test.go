@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -33,5 +34,12 @@ func TestVerifyChecksum(t *testing.T) {
 	}
 	if err := VerifyChecksum([]byte("nothex  tool.zip\n"), "tool.zip", archive); err == nil {
 		t.Fatal("malformed digest accepted")
+	}
+	// The name carries the release's tag, which the server chose.
+	hostile := "tool-1.2.3\x1b[31m.zip"
+	for _, sums := range [][]byte{sums, fmt.Appendf(nil, "%x  %s\n", sha256.Sum256([]byte("other")), hostile)} {
+		if err := VerifyChecksum(sums, hostile, archive); err == nil || strings.Contains(err.Error(), "\x1b") {
+			t.Fatalf("VerifyChecksum = %q, want an error without control characters", err)
+		}
 	}
 }

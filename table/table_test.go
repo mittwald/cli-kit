@@ -200,3 +200,81 @@ func TestWithFormatSelectsStyleOrRecords(t *testing.T) {
 		t.Fatalf("text format replaced the chosen style:\n%s", text)
 	}
 }
+
+// A header transform changes the text of a header cell and never the escape
+// sequences a caller painted into it: upper-cased, "ESC [1m" would delete a
+// line instead of setting bold, and a link would point somewhere else.
+func TestHeaderTransformLeavesEscapeSequences(t *testing.T) {
+	bold := "\x1b[1mname\x1b[0m"
+	link := term.Hyperlink("https://example.com/Docs/readme", "docs")
+	tbl := New(&bytes.Buffer{}, []string{bold, link, "plain", "a\x1b[4mb\x1b[0mc"}, UppercaseHeaders(), WithColor(false))
+	tbl.Append("1", "2", "3", "4")
+	want := "\x1b[1mNAME\x1b[0m  " + term.Hyperlink("https://example.com/Docs/readme", "DOCS") + "  PLAIN  A\x1b[4mB\x1b[0mC\n" +
+		"1     2     3      4\n"
+	if got := render(t, tbl); got != want {
+		t.Fatalf("table mismatch\nwant:\n%q\ngot:\n%q", want, got)
+	}
+
+	// Any transform gets the text alone, piece by piece.
+	var seen []string
+	tbl = New(&bytes.Buffer{}, []string{bold + "!"}, WithColor(false), WithHeaderTransform(func(s string) string {
+		seen = append(seen, s)
+		return "<" + s + ">"
+	}))
+	if got, want := render(t, tbl), "\x1b[1m<name>\x1b[0m<!>\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if strings.Join(seen, "|") != "name|!" {
+		t.Fatalf("the transform saw %q", seen)
+	}
+
+	// With SanitizeCells the color the caller painted survives the transform.
+	tbl = New(&bytes.Buffer{}, []string{bold}, UppercaseHeaders(), WithColor(false), SanitizeCells())
+	if got, want := render(t, tbl), "\x1b[1mNAME\x1b[0m\n"; got != want {
+		t.Fatalf("sanitized header = %q, want %q", got, want)
+	}
+}
+
+// A tab or a lone carriage return in a cell would move the cursor off the
+// grid: the tab to a stop that depends on the column the cell is drawn at,
+// the carriage return to the start of the line. A tab becomes spaces, counted
+// from the start of the cell, and the carriage return goes, so every line
+// keeps its width.
+func TestTabsAndCarriageReturnsKeepTheGrid(t *testing.T) {
+	tbl := New(&bytes.Buffer{}, []string{"A", "B"}, WithStyle(ASCII), WithColor(false))
+	tbl.Append("a\tb", "x")
+	tbl.Append("abcdef\rXY", "y\tz")
+	tbl.Append("one\r\ntwo\tx", "\x1b[31m\tred\x1b[0m")
+	got := render(t, tbl)
+	want := "+-----------+-------------+\n" +
+		"| A         | B           |\n" +
+		"+-----------+-------------+\n" +
+		"| a       b | x           |\n" +
+		"+-----------+-------------+\n" +
+		"| abcdefXY  | y       z   |\n" +
+		"+-----------+-------------+\n" +
+		"| one       | \x1b[31m        red\x1b[0m |\n" +
+		"| two     x |             |\n" +
+		"+-----------+-------------+\n"
+	if got != want {
+		t.Fatalf("table mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+	if strings.ContainsAny(got, "\t\r") {
+		t.Fatalf("the table holds a tab or a carriage return: %q", got)
+	}
+	width := tbl.TotalWidth()
+	for _, line := range lines(got) {
+		if w := term.VisibleWidth(line); w != width {
+			t.Errorf("line width %d, TotalWidth %d: %q", w, width, line)
+		}
+	}
+
+	// The same cell is as wide in the second column as in the first, and
+	// right-aligned as left-aligned.
+	tbl = New(&bytes.Buffer{}, nil, WithAlignment(AlignLeft, AlignRight))
+	tbl.Append("a\tb", "a\tb")
+	tbl.Append("123456789", "123456789")
+	if got, want := render(t, tbl), "a       b  a       b\n123456789  123456789\n"; got != want {
+		t.Fatalf("plain table = %q, want %q", got, want)
+	}
+}

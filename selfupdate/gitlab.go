@@ -29,6 +29,11 @@ const (
 // as GoReleaser publishes them with gitlab_urls.use_package_registry. Plain
 // release links are not used: on many instances they only resolve through
 // a browser session, whatever token the request carries.
+//
+// GitLab has no notion of a pre-release, so the latest release is found by
+// its tag: the highest stable version among the project's most recent
+// releases. A tag with a pre-release part, such as "v2.0.0-rc.1", and a
+// tag that is no version are skipped.
 type GitLab struct {
 	// BaseURL is the instance, such as "https://gitlab.example.com". An URL
 	// ending in "/api/v4" is taken as the API root itself.
@@ -41,14 +46,20 @@ type GitLab struct {
 	// published to; GoReleaser uses the project name.
 	Package string
 	// Token supplies the credential; nil sends none, which suits public
-	// projects.
+	// projects. With a Token, BaseURL has to be an https URL, or an http
+	// URL of a loopback address; see [TokenFunc].
 	Token TokenFunc
 	// TokenHeader is the header the credential goes in; empty means
 	// [HeaderPrivateToken].
 	TokenHeader string
-	// Client sends the requests; nil means http.DefaultClient. A redirect
-	// to another origin (scheme, host and port) never carries the
-	// credential; the client's own CheckRedirect still applies.
+	// Client sends the requests. Nil means a client of this package's own
+	// that gives up on a server that does not connect, finish the TLS
+	// handshake or send response headers within half a minute, and on a
+	// response body that delivers nothing for a minute; a whole request has
+	// no time limit, as a download may take long. A Client set here is used
+	// as it is: its timeouts, and the context's deadline, are the caller's
+	// to set. A redirect to another origin (scheme, host and port) never
+	// carries the credential; the client's own CheckRedirect still applies.
 	Client *http.Client
 	// UserAgent identifies the requests; empty means a generic default.
 	UserAgent string
@@ -69,16 +80,17 @@ func (g *GitLab) project() string {
 	return url.PathEscape(strings.Trim(g.Project, "/"))
 }
 
-func (g *GitLab) requester() requester {
+func (g *GitLab) requester() *requester {
 	header := g.TokenHeader
 	if header == "" {
 		header = HeaderPrivateToken
 	}
-	r := requester{
+	r := &requester{
 		client:     g.Client,
 		token:      g.Token,
 		userAgent:  g.UserAgent,
 		authHeader: header,
+		origin:     g.api(),
 	}
 	if http.CanonicalHeaderKey(header) == HeaderAuthorization {
 		r.authScheme = "Bearer"
@@ -93,27 +105,70 @@ func (g *GitLab) check() error {
 	return nil
 }
 
-// Latest implements Source.
+// The releases GitLab.Latest looks at: pages of gitLabReleasesPerPage,
+// newest first, until one holds a stable version, and no more than
+// gitLabReleasePages of them.
+const (
+	gitLabReleasesPerPage = 20
+	gitLabReleasePages    = 5
+)
+
+// Latest implements Source. It returns the highest stable version among
+// the project's most recent releases: it reads the releases newest first,
+// twenty at a time, takes the highest stable version of the first page
+// that holds one, and gives up with [ErrNoRelease] after a hundred
+// releases without one.
 func (g *GitLab) Latest(ctx context.Context) (Release, error) {
 	if err := g.check(); err != nil {
 		return Release{}, err
 	}
-	resp, err := g.requester().get(ctx, g.api()+"/projects/"+g.project()+"/releases/permalink/latest",
-		"application/json", ErrNoRelease)
-	if err != nil {
-		return Release{}, err
+	r := g.requester()
+	seen := 0
+	for page := 1; page <= gitLabReleasePages; page++ {
+		tags, err := g.releaseTags(ctx, r, page)
+		if err != nil {
+			return Release{}, err
+		}
+		best := ""
+		for _, tag := range tags {
+			if stableVersion(tag) && (best == "" || Compare(tag, best) > 0) {
+				best = tag
+			}
+		}
+		if best != "" {
+			return Release{Tag: best}, nil
+		}
+		seen += len(tags)
+		if len(tags) < gitLabReleasesPerPage {
+			break
+		}
 	}
-	defer drain(resp)
-	var body struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body); err != nil {
-		return Release{}, fmt.Errorf("selfupdate: decode latest release: %w", err)
-	}
-	if body.TagName == "" {
+	if seen == 0 {
 		return Release{}, ErrNoRelease
 	}
-	return Release{Tag: body.TagName}, nil
+	return Release{}, fmt.Errorf("%w: none of the %d most recent releases has a stable version as its tag", ErrNoRelease, seen)
+}
+
+// releaseTags returns the tags of one page of the project's releases,
+// newest first.
+func (g *GitLab) releaseTags(ctx context.Context, r *requester, page int) ([]string, error) {
+	resp, err := r.get(ctx, fmt.Sprintf("%s/projects/%s/releases?order_by=released_at&sort=desc&per_page=%d&page=%d",
+		g.api(), g.project(), gitLabReleasesPerPage, page), "application/json", ErrNoRelease)
+	if err != nil {
+		return nil, err
+	}
+	defer drain(resp)
+	var body []struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("selfupdate: decode releases: %w", err)
+	}
+	tags := make([]string, 0, len(body))
+	for _, release := range body {
+		tags = append(tags, release.TagName)
+	}
+	return tags, nil
 }
 
 // Download implements Source. GoReleaser publishes a package under its
@@ -130,9 +185,12 @@ func (g *GitLab) Download(ctx context.Context, rel Release, name string) (io.Rea
 	if rel.Tag != rel.Version() {
 		versions = append(versions, rel.Tag)
 	}
+	// One requester for both attempts, so a TokenFunc without a credential
+	// is asked again after a 404 once, not once per attempt.
+	r := g.requester()
 	var lastErr error
 	for _, version := range versions {
-		resp, err := g.requester().get(ctx, g.api()+"/projects/"+g.project()+"/packages/generic/"+
+		resp, err := r.get(ctx, g.api()+"/projects/"+g.project()+"/packages/generic/"+
 			url.PathEscape(g.Package)+"/"+url.PathEscape(version)+"/"+url.PathEscape(name), "", ErrAssetNotFound)
 		if err == nil {
 			return resp.Body, nil
@@ -143,5 +201,5 @@ func (g *GitLab) Download(ctx context.Context, rel Release, name string) (io.Rea
 		lastErr = err
 	}
 	return nil, fmt.Errorf("%w (tried package versions %s; check that the release was published to the Generic Package Registry)",
-		lastErr, strings.Join(versions, " and "))
+		lastErr, plain(strings.Join(versions, " and ")))
 }

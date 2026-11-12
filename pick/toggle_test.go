@@ -275,3 +275,56 @@ func TestChecklistFitsTheTerminalHeight(t *testing.T) {
 		t.Errorf("%d lines with room for all rows, want 35", len(lines))
 	}
 }
+
+// Labels and notes are drawn as plain text, whatever they were made from.
+func TestSwitchesDrawCallerTextPlain(t *testing.T) {
+	for _, checklist := range []bool{false, true} {
+		s := newSwitches(switchOptions{
+			title:   "Set\x1b[2J %s\n",
+			subject: "the\tflags",
+			note:    "note\x1b]0;t\x07\r\nmore",
+			rows: []switchRow{
+				{label: "a\x1b[2Jb\nc", note: "n\u009b1Am", on: "on\x07", off: "off\t"},
+				{label: "second"},
+			},
+			checklist: checklist,
+		}, false)
+		for i, line := range s.render(80) {
+			if !controlFree(line, false) {
+				t.Errorf("checklist %v: line %d carries a control character: %q", checklist, i, line)
+			}
+		}
+		if got, want := s.render(80)[0], "Set the flags "; got != want {
+			t.Errorf("checklist %v: title = %q, want %q", checklist, got, want)
+		}
+	}
+}
+
+// On a terminal too short for the whole block the switches stay and the
+// lines around them go, as in a list.
+func TestSwitchesFitAShortTerminal(t *testing.T) {
+	rows := make([]switchRow, 6)
+	for i := range rows {
+		rows[i] = switchRow{label: "switch " + strconv.Itoa(i+1)}
+	}
+	for height := 1; height <= 12; height++ {
+		s := newSwitches(switchOptions{title: "Which?", note: "a note", rows: rows}, false)
+		s.resize(0, height)
+		s.apply(key{kind: keyEnd})
+		lines := s.render(80)
+		if most := max(height-1, 1); len(lines) > most {
+			t.Errorf("height %d: %d lines drawn, want %d at most", height, len(lines), most)
+		}
+		if !slices.ContainsFunc(lines, func(line string) bool { return strings.HasPrefix(line, cursorMarker) }) {
+			t.Errorf("height %d: the switch under the cursor is not drawn: %q", height, lines)
+		}
+		if height >= 5 && s.visible < minVisible {
+			t.Errorf("height %d: %d switches shown, want at least %d", height, s.visible, minVisible)
+		}
+	}
+	s := newSwitches(switchOptions{title: "Which?", note: "a note", rows: rows}, false)
+	s.resize(0, 12)
+	if got, want := len(s.render(80)), 6+5; got != want {
+		t.Errorf("%d lines with room for everything, want %d", got, want)
+	}
+}

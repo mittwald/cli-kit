@@ -50,6 +50,24 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -race ./...
+      - name: Test with East Asian width settings
+        # Widths must not depend on the locale: a Japanese, Chinese or Korean
+        # environment makes go-runewidth count ambiguous characters as wide.
+        if: runner.os == 'Linux'
+        run: go test ./...
+        env:
+          LC_ALL: ja_JP.UTF-8
+          RUNEWIDTH_EASTASIAN: "1"
+
+  vulncheck:
+    name: Vulnerability check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   cross:
     name: Cross-compile

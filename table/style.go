@@ -6,8 +6,9 @@ import (
 )
 
 // Line is one horizontal rule: a left cap, a fill repeated across every
-// column, a junction between columns, and a right cap. A Line without a fill
-// is not drawn.
+// column, a junction between columns, and a right cap. A fill wider than one
+// cell is cut where it does not fit a column a whole number of times. A Line
+// without a fill is not drawn.
 type Line struct {
 	Left, Fill, Junction, Right string
 }
@@ -45,7 +46,10 @@ type Style struct {
 	// painted, and escape sequences are removed from its cells.
 	Verbatim bool
 	// AlignMarkers marks right-aligned columns with a colon at the right end
-	// of the header rule, the way markdown declares column alignment.
+	// of the header rule, the way markdown declares column alignment. There
+	// the header rule is what makes the lines a table, so a style with
+	// AlignMarkers draws it for a table without headers too, under an empty
+	// header row.
 	AlignMarkers bool
 }
 
@@ -135,7 +139,9 @@ var (
 	}
 	// Markdown is a GitHub-flavored pipe table: a header rule and nothing
 	// else, no indent, multi-line cells folded with <br>, pipes escaped, and
-	// never painted. It is what an --output markdown flag prints; it is not
+	// never painted. A table without headers gets an empty header row, since
+	// a pipe table is one only with its header rule. It is what an --output
+	// markdown flag prints; it is not
 	// one of the [StyleNames], which list the drawn frames a --table-style
 	// flag picks from.
 	Markdown = Style{

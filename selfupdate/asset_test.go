@@ -24,6 +24,29 @@ func TestAssetNamers(t *testing.T) {
 	}
 }
 
+// DefaultAssets follows GoReleaser's default archives.name_template.
+func TestDefaultAssets(t *testing.T) {
+	name := DefaultAssets("tool")
+	for _, tt := range []struct {
+		tag      string
+		platform Platform
+		want     string
+	}{
+		{"v1.2.3", Platform{OS: "linux", Arch: "amd64"}, "tool_1.2.3_linux_amd64.tar.gz"},
+		{"v1.2.3", Platform{OS: "linux", Arch: "arm", Arm: "7"}, "tool_1.2.3_linux_armv7.tar.gz"},
+		{"v1.2.3", Platform{OS: "linux", Arch: "arm", Arm: "6"}, "tool_1.2.3_linux_armv6.tar.gz"},
+		{"v1.2.3", Platform{OS: "darwin", Arch: "arm64"}, "tool_1.2.3_darwin_arm64.tar.gz"},
+		{"v1.2.3", Platform{OS: "windows", Arch: "amd64"}, "tool_1.2.3_windows_amd64.zip"},
+		{"v1.2.3", Platform{OS: "windows", Arch: "386"}, "tool_1.2.3_windows_386.zip"},
+		{"1.2.3", Platform{OS: "linux", Arch: "amd64"}, "tool_1.2.3_linux_amd64.tar.gz"},
+		{"v2.0.0-rc.1", Platform{OS: "linux", Arch: "arm64"}, "tool_2.0.0-rc.1_linux_arm64.tar.gz"},
+	} {
+		if got := name(Release{Tag: tt.tag}, tt.platform); got != tt.want {
+			t.Errorf("DefaultAssets(%s, %+v) = %q, want %q", tt.tag, tt.platform, got, tt.want)
+		}
+	}
+}
+
 func TestCurrentPlatform(t *testing.T) {
 	p := CurrentPlatform()
 	if p.OS == "" || p.Arch == "" {

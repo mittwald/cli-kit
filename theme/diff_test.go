@@ -80,6 +80,60 @@ func TestDiffScanner(t *testing.T) {
 			"@@ -0,0 +0,0 @@\n-a",
 			"ht",
 		},
+		// A renamed file has no hunk: its header ends with its last header
+		// line, and the next commit of a git log -p is text again.
+		"text after a file without a hunk": {
+			"commit 1111\n\n    first\n\n" +
+				"diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n" +
+				"\ncommit 2222\nAuthor: B\n\n    second\n\n" +
+				"diff --git a/z b/z\nindex 1..2 100644\n--- a/z\n+++ b/z\n@@ -1 +1 @@\n-a\n+b",
+			"tttt" + "ffff" + "tttttt" + "ffffh-+",
+		},
+		"text after a binary file": {
+			"diff --git a/i.png b/i.png\nindex 1..2 100644\nBinary files a/i.png and b/i.png differ\n\ncommit 2222\n    message",
+			"fffttt",
+		},
+		"binary patch": {
+			"diff --git a/i.png b/i.png\nindex 1..2 100644\nGIT binary patch\nliteral 5\nMcmZQzU|?imU}azc0Sf>D\n\ndiff --git a/z b/z",
+			"fffttt" + "f",
+		},
+		"new, deleted and copied files": {
+			"diff --git a/x b/x\nnew file mode 100644\nindex 0..1\n--- /dev/null\n+++ b/x\n" +
+				"diff --git a/y b/y\ndeleted file mode 100644\nold mode 100644\nnew mode 100755\n" +
+				"dissimilarity index 80%\ncopy from y\ncopy to z",
+			"fffff" + "fffffff",
+		},
+		// Prose that starts with the word diff starts no file.
+		"prose starting with diff": {
+			"diff algorithm changed, see below\nmore prose\n- a list item\n---\n a | 2 +-\n\ndiff -u a/a b/a\n--- a/a\n+++ b/a",
+			"tttttt" + "fff",
+		},
+		// The combined diff of a merge: one marker column per parent.
+		"combined diff": {
+			"diff --cc file\nindex 1,2..3\nmode 100644,100644..100755\n--- a/file\n+++ b/file\n" +
+				"@@@ -1,4 -1,4 +1,5 @@@ func\n  ctx\n- old1\n -old2\n++new\n +new2\n+ new3\n  ctx\ncommit 2222",
+			"fffff" + "hc--+++c" + "t",
+		},
+		"combined diff of three parents": {
+			"@@@@ -1,2 -1,3 -1,3 +1,3 @@@@\n---a\n+++b\n   \n+  c\n+  d",
+			"h-+c+t",
+		},
+		"combined diff, removed in one parent": {
+			"@@@ -1,2 -1 +1 @@@\n- a\n  b\n--- a/next",
+			"h-cf",
+		},
+		"combined diff without counts": {
+			"@@@ unknown @@@\n -a\n+ b\n\n  c\nx",
+			"h-+cct",
+		},
+		"combined diff, blank context line": {
+			"@@@ -1,2 -1,2 +1,2 @@@\n\n++a\n--b",
+			"hc+-",
+		},
+		"more parents than are counted": {
+			"@@@@@@@@@@ -1 -1 -1 -1 -1 -1 -1 -1 -1 +1 @@@@@@@@@@\n---------a\n+++++++++b\n+++ b/x",
+			"h-+f",
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -112,6 +166,66 @@ func TestPaintDiffLine(t *testing.T) {
 				t.Errorf("PaintDiffLine(%d, %q) = %q, want %q", tt.kind, tt.line, got, tt.want)
 			}
 		})
+	}
+}
+
+// The header of a hunk is painted up to the @ signs that close it, as many
+// as open it.
+func TestPaintDiffLineHunkHeaders(t *testing.T) {
+	th := Theme{DiffHunk: "36"}
+	tests := map[string]string{
+		"@@ -1,2 +1,2 @@":             "\x1b[36m@@ -1,2 +1,2 @@\x1b[0m",
+		"@@ -1,2 +1,2 @@ func main()": "\x1b[36m@@ -1,2 +1,2 @@\x1b[0m func main()",
+		"@@@ -1,3 -1,3 +1,4 @@@ func": "\x1b[36m@@@ -1,3 -1,3 +1,4 @@@\x1b[0m func",
+		"@@@ -1,3 -1,3 +1,4 @@@":      "\x1b[36m@@@ -1,3 -1,3 +1,4 @@@\x1b[0m",
+		"@@ -1 +1 @@ a @@ b":          "\x1b[36m@@ -1 +1 @@\x1b[0m a @@ b",
+		"@@ unclosed":                 "\x1b[36m@@ unclosed\x1b[0m",
+		"@@":                          "\x1b[36m@@\x1b[0m",
+	}
+	for line, want := range tests {
+		if got := th.PaintDiffLine(DiffHunkHeader, line); got != want {
+			t.Errorf("PaintDiffLine(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+// A combined diff is painted like git paints it: a line is removed or added
+// whichever of its columns says so.
+func TestPaintDiffCombined(t *testing.T) {
+	th := Theme{Added: "32", Removed: "31", DiffHeader: "1", DiffHunk: "36"}
+	diff := "diff --cc file\n@@@ -1,2 -1,2 +1,3 @@@ func\n  ctx\n -old\n +new\n++both\n"
+	want := "\x1b[1mdiff --cc file\x1b[0m\n" +
+		"\x1b[36m@@@ -1,2 -1,2 +1,3 @@@\x1b[0m func\n" +
+		"  ctx\n" +
+		"\x1b[31m -old\x1b[0m\n" +
+		"\x1b[32m +new\x1b[0m\n" +
+		"\x1b[32m++both\x1b[0m\n"
+	if got := th.PaintDiff(diff); got != want {
+		t.Errorf("PaintDiff =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// What follows a file without a hunk is not painted as its header.
+func TestPaintDiffAfterAFileWithoutAHunk(t *testing.T) {
+	th := Theme{Added: "32", Removed: "31", DiffHeader: "1", DiffHunk: "36"}
+	diff := "diff --git a/x b/y\nrename from x\nrename to y\n\ncommit 2222\n    message\n"
+	want := "\x1b[1mdiff --git a/x b/y\x1b[0m\n\x1b[1mrename from x\x1b[0m\n\x1b[1mrename to y\x1b[0m\n\ncommit 2222\n    message\n"
+	if got := th.PaintDiff(diff); got != want {
+		t.Errorf("PaintDiff =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// PaintDiff takes nothing out of the diff. Text from elsewhere is made plain
+// first, and then holds nothing but the diff's own text to paint.
+func TestPaintDiffOfPlainText(t *testing.T) {
+	th := Theme{Added: "32", Removed: "31", DiffHunk: "36"}
+	diff := "@@ -1 +1 @@\n-a\x1b[0m still removed\n+\x1b[31mlooks removed\x1b]52;c;AAAA\x07\n"
+	if got := th.PaintDiff(diff); !strings.Contains(got, "\x1b]52;c;AAAA\x07") {
+		t.Errorf("PaintDiff took an escape sequence out of the diff: %q", got)
+	}
+	want := "\x1b[36m@@ -1 +1 @@\x1b[0m\n\x1b[31m-a still removed\x1b[0m\n\x1b[32m+looks removed\x1b[0m\n"
+	if got := th.PaintDiff(term.Plain(diff)); got != want {
+		t.Errorf("PaintDiff of plain text =\n%q\nwant\n%q", got, want)
 	}
 }
 

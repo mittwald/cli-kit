@@ -88,3 +88,32 @@ func TestPrompt(t *testing.T) {
 		t.Errorf("Prompt() off a terminal = %q, want %q", got, want)
 	}
 }
+
+// A status line names things from elsewhere. What it writes is plain text,
+// on a terminal and off it.
+func TestStatusWritesPlainText(t *testing.T) {
+	var out bytes.Buffer
+	Status(&out, "Fetching \x1b]52;c;cm0=\x07\x1b[2Jreleases\r\nof a\tb...")
+	if got, want := out.String(), "Fetching releases\nof a    b...\n"; got != want {
+		t.Errorf("Status() wrote %q, want %q", got, want)
+	}
+}
+
+// A value and a question written beside the prompts read the way the
+// prompts draw them: as plain text, the subject filled in once.
+func TestNameAndPromptArePlain(t *testing.T) {
+	var out bytes.Buffer
+	if got, want := Name(&out, "tool\x1b[2J-1.2\n(v1)"), "tool-1.2 (v1)"; got != want {
+		t.Errorf("Name() = %q, want %q", got, want)
+	}
+	if got, want := Prompt(&out, "Rename %s\x1b[2J (was %s): ", "pro\tduction"), "Rename pro duction (was %s): "; got != want {
+		t.Errorf("Prompt() = %q, want %q", got, want)
+	}
+
+	was := term.CurrentColorMode()
+	term.SetColorMode(term.ColorAlways)
+	t.Cleanup(func() { term.SetColorMode(was) })
+	if got, want := term.StripANSI(Prompt(&out, "Rename %s (was %s): ", "production")), "Rename production (was %s): "; got != want {
+		t.Errorf("Prompt() in color reads %q, want %q, as without", got, want)
+	}
+}

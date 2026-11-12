@@ -17,7 +17,8 @@ import (
 // a block closes it.
 //
 // Both writers expect whole lines per write, the way fmt.Fprintln writes
-// them. A Blocks is safe for concurrent use.
+// them; a write may hold several lines, and an empty write does nothing. A
+// Blocks is safe for concurrent use.
 type Blocks struct {
 	mu        sync.Mutex
 	w         io.Writer
@@ -40,7 +41,8 @@ func WithDetailStyle(style theme.Style) BlocksOption {
 }
 
 // WithHighlight decides which detail lines are left unpainted so they stand
-// out from the rest of the block. The default leaves lines containing
+// out from the rest of the block. It is asked about every line of a write on
+// its own, without the line's newline. The default leaves lines containing
 // "WARNING" or "ERROR" unpainted.
 func WithHighlight(highlight func(text string) bool) BlocksOption {
 	return func(b *Blocks) { b.highlight = highlight }
@@ -112,6 +114,10 @@ func (d detailWriter) Close() { d.b.Close() }
 func (d detailWriter) Spaced() { d.b.Spaced() }
 
 func (d detailWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		// Nothing to show: no block opens for it.
+		return 0, nil
+	}
 	b := d.b
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -124,18 +130,30 @@ func (d detailWriter) Write(p []byte) (int, error) {
 		b.open = true
 		b.spaced = false
 	}
-	text := string(p)
-	if b.color && b.style != "" && (b.highlight == nil || !b.highlight(text)) {
-		body, newline := strings.CutSuffix(text, "\n")
-		text = b.style.PaintLines(body)
-		if newline {
-			text += "\n"
-		}
-	}
-	if _, err := io.WriteString(b.w, text); err != nil {
+	if _, err := io.WriteString(b.w, b.paintLocked(string(p))); err != nil {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// paintLocked paints every line of text that is not to stand out, each on
+// its own, so a highlighted line among others stays the only one unpainted.
+func (b *Blocks) paintLocked(text string) string {
+	if !b.color || b.style == "" {
+		return text
+	}
+	body, newline := strings.CutSuffix(text, "\n")
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if b.highlight == nil || !b.highlight(line) {
+			lines[i] = b.style.Paint(line)
+		}
+	}
+	text = strings.Join(lines, "\n")
+	if newline {
+		text += "\n"
+	}
+	return text
 }
 
 type plainWriter struct{ b *Blocks }
@@ -144,6 +162,9 @@ type plainWriter struct{ b *Blocks }
 func (w plainWriter) Unwrap() io.Writer { return w.b.w }
 
 func (w plainWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 	b := w.b
 	b.mu.Lock()
 	defer b.mu.Unlock()

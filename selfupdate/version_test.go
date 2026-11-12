@@ -24,6 +24,27 @@ func TestCompare(t *testing.T) {
 		{"dev", "dev", 0},
 		{"v1.x", "v1.0", -1},
 		{"1.0.0-", "1.0.0", -1},
+		// What "git describe" prints for a commit after a tag is newer than
+		// the tag, and older than the next version.
+		{"v1.2.3-5-gabc1234", "v1.2.3", 1},
+		{"v1.2.3-5-gabc1234", "v1.2.4", -1},
+		{"v1.2.3-5-gabc1234", "v1.2.4-rc.1", -1},
+		{"v1.2.3-5-gabc1234", "v1.2.3-12-g0123abc", -1},
+		{"v1.2.3-5-gabc1234-dirty", "v1.2.3-5-gabc1234", 1},
+		{"v1.2.3-dirty", "v1.2.3", 1},
+		{"v1.2.3-dirty", "v1.2.3-1-gabc1234", -1},
+		{"v1.2.3-0-gabc1234", "v1.2.3", 0},
+		{"v1.2.3-rc.1-5-gabc1234", "v1.2.3-rc.1", 1},
+		{"v1.2.3-rc.1-5-gabc1234", "v1.2.3-rc.2", -1},
+		{"v1.2.3-rc.1-5-gabc1234", "v1.2.3", -1},
+		// A pre-release that only looks similar stays one.
+		{"1.2.3-5-gamma", "1.2.3", -1},
+		{"1.2.3-x-gabc1234", "1.2.3", -1},
+		{"1.2.3-5-gabc", "1.2.3", -1},
+		{"1.2.4-SNAPSHOT-abc1234", "1.2.3", 1},
+		{"1.2.4-SNAPSHOT-abc1234", "1.2.4", -1},
+		// A part too large for an int makes the string no version.
+		{"v99999999999999999999.0.0", "v1.0.0", -1},
 	}
 	for _, tt := range tests {
 		if got := Compare(tt.a, tt.b); got != tt.want {
@@ -41,5 +62,28 @@ func TestIsNewer(t *testing.T) {
 	}
 	if !IsNewer("v0.0.1", "dev") {
 		t.Fatal("a local dev build should update to any release")
+	}
+	// A build of a commit after the release is not updated to that release.
+	if IsNewer("v1.2.3", "v1.2.3-5-gabc1234") || IsNewer("v1.2.3", "v1.2.3-dirty") || !IsNewer("v1.2.4", "v1.2.3-5-gabc1234") {
+		t.Fatal("IsNewer ranks a build after a tag below that tag, or above the next")
+	}
+}
+
+func TestStableVersion(t *testing.T) {
+	for tag, want := range map[string]bool{
+		"v1.2.3":            true,
+		"1.2":               true,
+		"v1.2.3+build.5":    true,
+		"v2.0.0-rc.1":       false,
+		"v2.0.0-beta":       false,
+		"v1.2.3-5-gabc1234": false,
+		"v1.2.3-dirty":      false,
+		"nightly":           false,
+		"release-2":         false,
+		"":                  false,
+	} {
+		if got := stableVersion(tag); got != want {
+			t.Errorf("stableVersion(%q) = %v, want %v", tag, got, want)
+		}
 	}
 }

@@ -20,7 +20,6 @@ const (
 	slotOverline
 	slotForeground
 	slotBackground
-	slotUnderlineColor
 	slotCount
 )
 
@@ -29,10 +28,10 @@ const slotReset = -1
 
 // clearCodes are the parameters that switch each slot's attribute off. Bold
 // and dim share theirs.
-var clearCodes = [slotCount]string{"22", "22", "23", "24", "25", "27", "29", "55", "39", "49", "59"}
+var clearCodes = [slotCount]string{"22", "22", "23", "24", "25", "27", "29", "55", "39", "49"}
 
 // sgrParam is one attribute an SGR sequence sets or switches off: its
-// parameters as written ("1", "38;5;196"), and the slot it acts on.
+// parameters as they are kept ("1", "38;5;196"), and the slot it acts on.
 type sgrParam struct {
 	text  string
 	slot  int
@@ -60,16 +59,17 @@ func sgrParams(seq string) (string, bool) {
 }
 
 // parseSGR reads the parameters of an SGR sequence and returns the ones that
-// set or clear an attribute a rendition tracks, and whether it left any out.
-// An empty parameter is 0, a reset, as terminals read it.
-func parseSGR(params string) (kept []sgrParam, dropped bool) {
+// set or clear an attribute a rendition tracks, and whether they differ from
+// what the sequence wrote: a parameter was left out, or a 24-bit color became
+// one of the 256. An empty parameter is 0, a reset, as terminals read it.
+func parseSGR(params string) (kept []sgrParam, changed bool) {
 	fields := strings.Split(params, ";")
 	for i := 0; i < len(fields); i++ {
 		code := 0
 		if fields[i] != "" {
 			n, err := strconv.Atoi(fields[i])
 			if err != nil {
-				dropped = true
+				changed = true
 				continue
 			}
 			code = n
@@ -116,47 +116,41 @@ func parseSGR(params string) (kept []sgrParam, dropped bool) {
 			param.slot = slotOverline
 		case code == 55:
 			param.slot, param.clear = slotOverline, true
-		case code == 59:
-			param.slot, param.clear = slotUnderlineColor, true
 		case code == 38, code == 48, code == 58:
 			// An extended color's components are read together: the 2 of
-			// 38;2;… is a selector, not a dim attribute.
-			n, ok := extendedColor(fields[i+1:])
-			param.text = strings.Join(fields[i:i+1+n], ";")
+			// 38;2;… is a selector, not a dim attribute. An underline color
+			// (58) goes with its components, so that none of them is left
+			// behind as an attribute.
+			n, index, exact := extendedColor(fields[i+1:])
 			i += n
-			if !ok {
-				dropped = true
+			if index < 0 || code == 58 {
+				changed = true
 				continue
 			}
-			param.slot = extendedSlot(code)
+			param.text += ";5;" + strconv.Itoa(index)
+			param.slot = slotForeground
+			if code == 48 {
+				param.slot = slotBackground
+			}
+			changed = changed || !exact
 		default:
-			dropped = true
+			changed = true
 			continue
 		}
 		kept = append(kept, param)
 	}
-	return kept, dropped
-}
-
-// extendedSlot is the slot an extended color sets: 38 the foreground, 48
-// the background, 58 the underline.
-func extendedSlot(code int) int {
-	switch code {
-	case 48:
-		return slotBackground
-	case 58:
-		return slotUnderlineColor
-	}
-	return slotForeground
+	return kept, changed
 }
 
 // extendedColor reads the components of an extended color, what follows 38,
 // 48 or 58: 5 and a palette index, or 2 and red, green and blue, each 0 to
-// 255. It returns how many fields belong to the color and whether they make
-// a valid one.
-func extendedColor(fields []string) (int, bool) {
+// 255. It returns how many fields belong to the color, the index of the
+// color among the 256, or -1 when the fields make no valid color, and
+// whether that index is what the fields wrote: a 24-bit color is given the
+// index of the nearest of the 256.
+func extendedColor(fields []string) (n, index int, exact bool) {
 	if len(fields) == 0 {
-		return 0, false
+		return 0, -1, false
 	}
 	want := 0
 	switch fields[0] {
@@ -165,17 +159,74 @@ func extendedColor(fields []string) (int, bool) {
 	case "2":
 		want = 3
 	default:
-		return 1, false
+		return 1, -1, false
 	}
 	if len(fields) < 1+want {
-		return len(fields), false
+		return len(fields), -1, false
 	}
-	for _, field := range fields[1 : 1+want] {
-		if n, err := strconv.Atoi(field); err != nil || n < 0 || n > 255 {
-			return 1 + want, false
+	var components [3]int
+	for i, field := range fields[1 : 1+want] {
+		value, err := strconv.Atoi(field)
+		if err != nil || value < 0 || value > 255 {
+			return 1 + want, -1, false
 		}
+		components[i] = value
 	}
-	return 1 + want, true
+	if want == 1 {
+		// Leading zeros are not what a rendition carries on: 38;5;007 is
+		// written again as 38;5;7.
+		return 1 + want, components[0], fields[1] == strconv.Itoa(components[0])
+	}
+	return 1 + want, nearest256(components[0], components[1], components[2]), false
+}
+
+// cubeLevels are the six intensities of each channel in the 6×6×6 color
+// cube of the 256 colors, indexes 16 to 231.
+var cubeLevels = [6]int{0, 95, 135, 175, 215, 255}
+
+// Nearest256 returns the index among the 256 colors that is nearest to the
+// 24-bit color r, g, b, for a terminal that does not take 24-bit colors:
+// "38;5;n" paints text in it and "48;5;n" the background. It is the mapping
+// [Sanitize] applies to the 24-bit colors of the text it is given.
+func Nearest256(r, g, b uint8) int {
+	return nearest256(int(r), int(g), int(b))
+}
+
+// nearest256 returns the index among the 256 colors that is nearest to the
+// 24-bit color r, g, b: a color of the cube, or one of the 24 grays, indexes
+// 232 to 255, where that is nearer. The 16 colors below the cube are left
+// out, since every terminal has its own shades for them.
+func nearest256(r, g, b int) int {
+	ri, gi, bi := cubeIndex(r), cubeIndex(g), cubeIndex(b)
+	cube := 16 + 36*ri + 6*gi + bi
+	cubeDistance := distance(cubeLevels[ri], cubeLevels[gi], cubeLevels[bi], r, g, b)
+	if cubeDistance == 0 {
+		return cube
+	}
+	// The grays run from 8 to 238 in steps of 10.
+	step := min(max((r+g+b)/3-3, 0)/10, 23)
+	gray := 8 + 10*step
+	if distance(gray, gray, gray, r, g, b) < cubeDistance {
+		return 232 + step
+	}
+	return cube
+}
+
+// cubeIndex returns which of the cube's six levels is nearest to v, 0 to
+// 255.
+func cubeIndex(v int) int {
+	switch {
+	case v < 48:
+		return 0
+	case v < 115:
+		return 1
+	}
+	return (v - 35) / 40
+}
+
+// distance is the squared distance between two colors.
+func distance(r1, g1, b1, r2, g2, b2 int) int {
+	return (r1-r2)*(r1-r2) + (g1-g2)*(g1-g2) + (b1-b2)*(b1-b2)
 }
 
 // rendition is the graphic rendition that SGR sequences leave set: for each

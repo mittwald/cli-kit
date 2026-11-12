@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -30,6 +31,22 @@ var ErrMissingUID = errors.New("ics: event has no UID")
 // ErrMissingProdID is returned when a calendar has no product identifier.
 var ErrMissingProdID = errors.New("ics: calendar has no PRODID")
 
+// ErrMissingStart is returned when an event has no Start. A calendar that is
+// published needs one for every event, and the zero time would put the event
+// into the year 1.
+var ErrMissingStart = errors.New("ics: event has no start")
+
+// ErrEndBeforeStart is returned when an event ends before it starts: a timed
+// event whose End is earlier than its Start, or an all-day event whose End,
+// which is exclusive, does not fall on a later date than its Start.
+var ErrEndBeforeStart = errors.New("ics: event ends before it starts")
+
+// ErrInvalidName is returned when the name of a property or of a parameter
+// is not one RFC 5545 allows: letters, digits and hyphens, and at least one
+// of them. Anything else in a name, a colon or a line break above all, would
+// be read as part of the content line around it.
+var ErrInvalidName = errors.New("ics: invalid property or parameter name")
+
 // Calendar is one VCALENDAR object.
 type Calendar struct {
 	// ProdID identifies the program that wrote the calendar, as a formal
@@ -38,12 +55,19 @@ type Calendar struct {
 	// Name is the calendar's display name (X-WR-CALNAME). Optional.
 	Name string
 	// Method is the iTIP method; empty means "PUBLISH", the method for a
-	// calendar that is imported or subscribed to.
+	// calendar that is imported or subscribed to. It is written in upper
+	// case, without control characters and surrounding white space.
 	Method string
-	// Scale is the calendar scale; empty means "GREGORIAN".
+	// Scale is the calendar scale; empty means "GREGORIAN". It is written as
+	// Method is.
 	Scale string
-	// TimeZone is the zone all-day dates are read in. When set, it is also
-	// written as X-WR-TIMEZONE, which some clients use as the calendar's zone.
+	// TimeZone is the zone all-day dates are read in. Its name is also
+	// written as X-WR-TIMEZONE, which some clients use as the calendar's
+	// zone, when it is one clients know: a name of the IANA time zone
+	// database that time.LoadLocation resolves, such as "Europe/Berlin" or
+	// "UTC". time.Local, whose name is "Local", and zones made with
+	// time.FixedZone have no such name; they still decide the dates, but no
+	// X-WR-TIMEZONE is written for them.
 	TimeZone *time.Location
 	// Stamp is the DTSTAMP of every event that has none of its own. Zero
 	// means the time of writing; set it for reproducible output.
@@ -77,14 +101,15 @@ type Calendar struct {
 	// VerbatimUIDs writes every [Event.UID] as given: only the control
 	// characters RFC 5545 allows in no content line, the C0 controls but tab
 	// and DEL, are removed, and invalid UTF-8 is replaced with U+FFFD. The
-	// C1 controls, which RFC 5545 allows, stay, so a UID keeps the form a
-	// feed published. By default, whitespace and the C1 controls are removed
-	// too. Set it when the UIDs come from a scheme of the caller's own that
-	// has to stay stable even where it lets whitespace or C1 controls
-	// through, such as UIDs a feed has published before: clients key events
-	// by UID, so a changed UID duplicates the event in every subscribed
-	// client. A UID that is empty or only whitespace is still
-	// [ErrMissingUID].
+	// C1 controls, which RFC 5545 allows, stay, and backslashes, semicolons
+	// and commas are not escaped, so a UID keeps the form a feed published.
+	// By default, white space and the C1 controls are removed too, and the
+	// UID is escaped as the TEXT value it is. Set it when the UIDs come from
+	// a scheme of the caller's own that has to stay stable even where it
+	// lets white space, C1 controls or the characters TEXT escapes through,
+	// such as UIDs a feed has published before: clients key events by UID,
+	// so a changed UID duplicates the event in every subscribed client. A
+	// UID that is empty or only white space is still [ErrMissingUID].
 	VerbatimUIDs bool
 }
 
@@ -109,25 +134,33 @@ const (
 	EndDerive
 	// EndAsGiven writes the zero End like any other: 00010101T000000Z for a
 	// timed event, the date the zero time falls on for an all-day event. No
-	// client reads that as a sensible end; use it only to keep the bytes of
-	// a feed whose earlier writer wrote the zero time.
+	// client reads that as a sensible end, and it is not [ErrEndBeforeStart]
+	// as an End that is set and lies before the start is; use it only to
+	// keep the bytes of a feed whose earlier writer wrote the zero time.
 	EndAsGiven
 )
 
 // Event is one VEVENT component.
 type Event struct {
-	// UID identifies the event across exports and is required. Whitespace
-	// and control characters are removed, unless [Calendar.VerbatimUIDs] is
-	// set. Occurrences of the same series need distinct UIDs, see
-	// [OccurrenceUID].
+	// UID identifies the event across exports and is required. White space,
+	// a no-break space as much as a space, and control characters are
+	// removed, and what is left is escaped as TEXT, so a reader gets back a
+	// backslash, a semicolon or a comma in it; [Calendar.VerbatimUIDs]
+	// writes the UID as given instead. Occurrences of the same series need
+	// distinct UIDs, see [OccurrenceUID].
 	UID string
 	// Stamp is the event's DTSTAMP; zero falls back to [Calendar.Stamp].
 	Stamp time.Time
-	// Start is when the event begins.
+	// Start is when the event begins. It is required: a zero Start is
+	// [ErrMissingStart].
 	Start time.Time
 	// End is when the event ends, exclusive. By default, zero leaves DTEND
 	// out, which makes a timed event end at its start, and makes an all-day
-	// event last a day; [Calendar.MissingEnd] chooses otherwise.
+	// event last a day; [Calendar.MissingEnd] chooses otherwise. An End that
+	// is set must not lie before Start, and for an all-day event it has to
+	// fall on a later date than Start, since the end date is exclusive: an
+	// event on 24 December alone ends on 25 December. Anything else is
+	// [ErrEndBeforeStart].
 	End time.Time
 	// AllDay writes Start and End as dates instead of times.
 	AllDay bool
@@ -140,10 +173,11 @@ type Event struct {
 	// Categories are written as one CATEGORIES property.
 	Categories []string
 	// Status is an RFC 5545 event status, such as "TENTATIVE" or
-	// "CONFIRMED"; empty leaves STATUS out.
+	// "CONFIRMED"; empty leaves STATUS out. It is written in upper case,
+	// without control characters and surrounding white space.
 	Status string
 	// Class is "PUBLIC", "PRIVATE" or "CONFIDENTIAL"; empty leaves CLASS out,
-	// which clients read as PUBLIC.
+	// which clients read as PUBLIC. It is written as Status is.
 	Class string
 	// Transparent marks the event as not blocking time (TRANSP:TRANSPARENT),
 	// as a holiday or an informational entry is. Otherwise it is OPAQUE.
@@ -176,8 +210,11 @@ type Param struct {
 }
 
 // Property is one content line: a name, optional parameters, and a value.
-// Value is written as given; build TEXT values with [TextProperty], which
-// escapes them.
+// Name and the names of Params have to be made of letters, digits and
+// hyphens, or writing the calendar fails with [ErrInvalidName]. Value is
+// written as given but for control characters, line breaks included, which
+// are removed, so a value cannot start a content line of its own; a tab
+// stays. Build TEXT values with [TextProperty], which escapes them.
 type Property struct {
 	Name   string
 	Params []Param
@@ -191,23 +228,55 @@ func TextProperty(name, value string, params ...Param) Property {
 }
 
 // String returns the property as one unfolded content line without CRLF.
-// Parameter values are caret encoded as RFC 6868 describes and quoted when
-// they contain ":", ";" or ",", so they cannot end the parameter early;
-// [Param.Quote] and [Param.LineBreak] change that per parameter. Control
-// characters in them are dropped, line breaks and tab aside, as
-// [EscapeText] drops them.
+// Names are written in upper case. Parameter values are caret encoded as
+// RFC 6868 describes and quoted when they contain ":", ";" or ",", so they
+// cannot end the parameter early; [Param.Quote] and [Param.LineBreak] change
+// that per parameter. Control characters in them are dropped, line breaks
+// and tab aside, as [EscapeText] drops them. Control characters in the names
+// and in Value are dropped as well, line breaks included, so the result is
+// always one line; String does not check the names any further, which
+// [Calendar.WriteTo] does.
 func (p Property) String() string {
 	var b strings.Builder
-	b.WriteString(strings.ToUpper(p.Name))
+	b.WriteString(strings.ToUpper(dropControls(p.Name)))
 	for _, param := range p.Params {
 		b.WriteByte(';')
-		b.WriteString(strings.ToUpper(param.Name))
+		b.WriteString(strings.ToUpper(dropControls(param.Name)))
 		b.WriteByte('=')
 		b.WriteString(param.encode())
 	}
 	b.WriteByte(':')
-	b.WriteString(p.Value)
+	b.WriteString(rawValue(p.Value))
 	return b.String()
+}
+
+// checkNames returns [ErrInvalidName] for the first name in p, its own or a
+// parameter's, that is not an RFC 5545 iana-token or x-name.
+func (p Property) checkNames() error {
+	if !validName(p.Name) {
+		return fmt.Errorf("property %q: %w", p.Name, ErrInvalidName)
+	}
+	for _, param := range p.Params {
+		if !validName(param.Name) {
+			return fmt.Errorf("property %q: parameter %q: %w", p.Name, param.Name, ErrInvalidName)
+		}
+	}
+	return nil
+}
+
+// validName reports whether name is an RFC 5545 iana-token, which an x-name
+// is too: one or more letters, digits and hyphens.
+func validName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := range len(name) {
+		c := name[i]
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 var paramEscaper = strings.NewReplacer("^", "^^", "\r\n", "^n", "\n", "^n", "\r", "^n", `"`, "^'")
@@ -257,6 +326,37 @@ func stripControls(s string) string {
 	}, s)
 }
 
+// rawValue returns a value that is written without TEXT escaping as it may
+// stand in a content line: without the control characters stripControls
+// drops and without line breaks, which would end the line, and with invalid
+// UTF-8 replaced.
+func rawValue(s string) string {
+	return strings.Map(func(r rune) rune {
+		if textControl(r) {
+			return -1
+		}
+		return r
+	}, strings.ToValidUTF8(s, "�"))
+}
+
+// dropControls returns s without any control character, tab and line breaks
+// included, and with invalid UTF-8 replaced.
+func dropControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || textControl(r) {
+			return -1
+		}
+		return r
+	}, strings.ToValidUTF8(s, "�"))
+}
+
+// keyword returns a value that is one word of RFC 5545, such as a status or
+// a method, as it is written: in upper case, without control characters and
+// surrounding white space.
+func keyword(s string) string {
+	return strings.ToUpper(strings.TrimSpace(dropControls(s)))
+}
+
 // isControl reports whether r is a character RFC 5545 allows in no content
 // line: a C0 control other than tab, or DEL.
 func isControl(r rune) bool {
@@ -304,8 +404,18 @@ func Fold(line string) []string {
 // occurrences share uid. RFC 5545 forbids two events with the same UID unless
 // a RECURRENCE-ID tells them apart; appending the start keeps each occurrence
 // its own event.
+//
+// The result is a UID for [Event.UID] like any other: uid is kept as given,
+// and the calendar that writes the event decides what becomes of it, removing
+// white space and escaping it by default and writing it as it stands with
+// [Calendar.VerbatimUIDs]. A uid that holds nothing but white space and
+// control characters gives the empty UID, so the event is still reported as
+// [ErrMissingUID].
 func OccurrenceUID(uid string, start time.Time) string {
-	return sanitizeUID(uid) + "-" + start.UTC().Format(utcFormat)
+	if sanitizeUID(uid) == "" {
+		return ""
+	}
+	return uid + "-" + start.UTC().Format(utcFormat)
 }
 
 // HashUID derives a stable UID from the fields that identify an event, for
@@ -326,11 +436,12 @@ func HashUID(domain string, parts ...string) string {
 	return uid
 }
 
-// sanitizeUID removes what a UID must not contain: control characters (C0,
-// DEL and C1) and the ASCII space.
+// sanitizeUID removes what a UID should not contain: control characters (C0,
+// DEL and C1) and white space, the Unicode spaces such as the no-break space
+// as much as the ASCII one.
 func sanitizeUID(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r <= 0x20 || r == 0x7f || isC1(r) {
+		if textControl(r) || unicode.IsSpace(r) {
 			return -1
 		}
 		return r
@@ -347,16 +458,14 @@ func (c Calendar) Marshal() ([]byte, error) {
 }
 
 // WriteTo writes the calendar to w as an iCalendar file. It implements
-// io.WriterTo. Nothing is written when the calendar or one of its events is
-// incomplete.
+// io.WriterTo. Nothing is written when the calendar or one of its events
+// cannot be written as it is: without a PRODID ([ErrMissingProdID]), a UID
+// ([ErrMissingUID]) or a Start ([ErrMissingStart]), with an End before the
+// Start ([ErrEndBeforeStart]), or with a property or parameter name that is
+// not one ([ErrInvalidName]).
 func (c Calendar) WriteTo(w io.Writer) (int64, error) {
-	if strings.TrimSpace(c.ProdID) == "" {
-		return 0, ErrMissingProdID
-	}
-	for i, event := range c.Events {
-		if _, ok := c.uid(event.UID); !ok {
-			return 0, fmt.Errorf("event %d (%q): %w", i, event.Summary, ErrMissingUID)
-		}
+	if err := c.check(); err != nil {
+		return 0, err
 	}
 
 	stamp := c.Stamp
@@ -372,16 +481,16 @@ func (c Calendar) WriteTo(w io.Writer) (int64, error) {
 	if c.Name != "" {
 		enc.line("X-WR-CALNAME:" + EscapeText(c.Name))
 	}
-	if c.TimeZone != nil {
-		enc.line("X-WR-TIMEZONE:" + EscapeText(c.TimeZone.String()))
+	if name, ok := zoneName(c.TimeZone); ok {
+		enc.line("X-WR-TIMEZONE:" + EscapeText(name))
 	}
 	for _, p := range c.Props {
 		enc.line(p.String())
 	}
 	for _, event := range c.Events {
 		enc.line("BEGIN:VEVENT")
-		for _, p := range c.eventProperties(event, stamp) {
-			enc.line(p.String())
+		for _, line := range c.eventLines(event, stamp) {
+			enc.line(line.text)
 		}
 		enc.line("END:VEVENT")
 	}
@@ -389,8 +498,71 @@ func (c Calendar) WriteTo(w io.Writer) (int64, error) {
 	return enc.n, enc.err
 }
 
-// uid returns the UID written for the event UID raw, and false when that
-// leaves no UID.
+// check returns the first reason the calendar cannot be written as it is.
+func (c Calendar) check() error {
+	if strings.TrimSpace(c.ProdID) == "" {
+		return ErrMissingProdID
+	}
+	for _, p := range c.Props {
+		if err := p.checkNames(); err != nil {
+			return fmt.Errorf("calendar %w", err)
+		}
+	}
+	for i, event := range c.Events {
+		if err := c.checkEvent(event); err != nil {
+			return fmt.Errorf("event %d (%q): %w", i, event.Summary, err)
+		}
+	}
+	return nil
+}
+
+// checkEvent returns the first reason ev cannot be written as it is. A zero
+// End is not one: [Calendar.MissingEnd] says what is written for it.
+func (c Calendar) checkEvent(ev Event) error {
+	if _, ok := c.uid(ev.UID); !ok {
+		return ErrMissingUID
+	}
+	if ev.Start.IsZero() {
+		return ErrMissingStart
+	}
+	if !ev.End.IsZero() {
+		before := ev.End.Before(ev.Start)
+		if ev.AllDay {
+			before = !dateIn(ev.End, c.TimeZone).After(dateIn(ev.Start, c.TimeZone))
+		}
+		if before {
+			return ErrEndBeforeStart
+		}
+	}
+	for _, p := range ev.Props {
+		if err := p.checkNames(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// zoneName returns the name written as X-WR-TIMEZONE for zone, and false
+// when zone has none clients know: only a name time.LoadLocation resolves
+// is one of the IANA time zone database. "Local" names whatever zone the
+// machine is in, and the name of a zone made with time.FixedZone is the
+// caller's own.
+func zoneName(zone *time.Location) (string, bool) {
+	if zone == nil {
+		return "", false
+	}
+	name := zone.String()
+	if name == "" || name == "Local" {
+		return "", false
+	}
+	if _, err := time.LoadLocation(name); err != nil {
+		return "", false
+	}
+	return name, true
+}
+
+// uid returns the UID written for the event UID raw, as the value of its
+// content line, and false when that leaves no UID.
 func (c Calendar) uid(raw string) (string, bool) {
 	if c.VerbatimUIDs {
 		uid := strings.Map(func(r rune) rune {
@@ -402,11 +574,11 @@ func (c Calendar) uid(raw string) (string, bool) {
 		return uid, strings.TrimSpace(uid) != ""
 	}
 	uid := sanitizeUID(raw)
-	return uid, uid != ""
+	return EscapeText(uid), uid != ""
 }
 
 func valueOr(value, fallback string) string {
-	if v := strings.ToUpper(strings.TrimSpace(value)); v != "" {
+	if v := keyword(value); v != "" {
 		return v
 	}
 	return fallback
@@ -437,20 +609,27 @@ func (e *encoder) line(line string) {
 // dateValue marks a DTSTART or DTEND value as a DATE.
 var dateValue = Param{Name: "VALUE", Value: "DATE"}
 
-// eventProperties returns the content lines of ev in the order they are
-// written.
-func (c Calendar) eventProperties(ev Event, calendarStamp time.Time) []Property {
+// contentLine is one unfolded content line of an event, with the property
+// name it is ordered by.
+type contentLine struct {
+	name, text string
+}
+
+// eventLines returns the content lines of ev in the order they are written.
+func (c Calendar) eventLines(ev Event, calendarStamp time.Time) []contentLine {
 	stamp := ev.Stamp
 	if stamp.IsZero() {
 		stamp = calendarStamp
 	}
-	props := make([]Property, 0, 12+len(ev.Props))
+	lines := make([]contentLine, 0, 12+len(ev.Props))
 	add := func(name, value string, params ...Param) {
-		props = append(props, Property{Name: name, Params: params, Value: value})
+		lines = append(lines, contentLine{name, Property{Name: name, Params: params, Value: value}.String()})
 	}
 
+	// The UID is written as uid made it: with VerbatimUIDs it keeps the C1
+	// controls Property.String drops from a value.
 	uid, _ := c.uid(ev.UID)
-	add("UID", uid)
+	lines = append(lines, contentLine{"UID", "UID:" + uid})
 	add("DTSTAMP", stamp.UTC().Format(utcFormat))
 	// A zero End is written as given with EndAsGiven, and otherwise left out
 	// or derived from the start.
@@ -493,29 +672,31 @@ func (c Calendar) eventProperties(ev Event, calendarStamp time.Time) []Property 
 			add("CATEGORIES", strings.Join(categories, ","))
 		}
 	}
-	if ev.Status != "" {
-		add("STATUS", strings.ToUpper(strings.TrimSpace(ev.Status)))
+	if status := keyword(ev.Status); status != "" {
+		add("STATUS", status)
 	}
 	if ev.Transparent {
 		add("TRANSP", "TRANSPARENT")
 	} else {
 		add("TRANSP", "OPAQUE")
 	}
-	if ev.Class != "" {
-		add("CLASS", strings.ToUpper(strings.TrimSpace(ev.Class)))
+	if class := keyword(ev.Class); class != "" {
+		add("CLASS", class)
 	}
 	if !ev.LastModified.IsZero() {
 		add("LAST-MODIFIED", ev.LastModified.UTC().Format(utcFormat))
 	}
-	props = append(props, ev.Props...)
-	orderProperties(props, c.EventPropertyOrder)
-	return props
+	for _, p := range ev.Props {
+		lines = append(lines, contentLine{p.Name, p.String()})
+	}
+	orderLines(lines, c.EventPropertyOrder)
+	return lines
 }
 
-// orderProperties sorts props by the position of their names in order,
-// keeping the order of properties with the same position. Properties whose
-// names order does not list go after those it does.
-func orderProperties(props []Property, order []string) {
+// orderLines sorts lines by the position of their names in order, keeping
+// the order of lines with the same position. Lines whose names order does
+// not list go after those it does.
+func orderLines(lines []contentLine, order []string) {
 	if len(order) == 0 {
 		return
 	}
@@ -526,13 +707,13 @@ func orderProperties(props []Property, order []string) {
 			rank[name] = i
 		}
 	}
-	position := func(p Property) int {
-		if i, ok := rank[strings.ToUpper(p.Name)]; ok {
+	position := func(line contentLine) int {
+		if i, ok := rank[strings.ToUpper(line.name)]; ok {
 			return i
 		}
 		return len(order)
 	}
-	slices.SortStableFunc(props, func(a, b Property) int {
+	slices.SortStableFunc(lines, func(a, b contentLine) int {
 		return cmp.Compare(position(a), position(b))
 	})
 }

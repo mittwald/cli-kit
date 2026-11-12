@@ -10,4 +10,6 @@
 //
 // [Theme.PaintDiff] paints a unified diff with the theme's diff roles, and
 // [DiffScanner] tells its lines apart for code that shows only some of them.
+// Both take the diff as it is and take nothing out of it: a diff that does
+// not come from the program itself goes through term.Plain first.
 package theme

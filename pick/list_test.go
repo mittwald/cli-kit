@@ -2,11 +2,14 @@ package pick
 
 import (
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/mittwald/cli-kit/term"
 	"github.com/mittwald/cli-kit/theme"
 )
 
@@ -189,21 +192,59 @@ func TestVisibleRowsFitTheTerminal(t *testing.T) {
 	for _, testCase := range []struct {
 		name                    string
 		maxVisible, height, out int
-		chrome                  int
+		note                    string
 	}{
-		{name: "leaves room for the chrome and a spare line", height: 24, chrome: 5, out: 18},
-		{name: "a note costs one row", height: 24, chrome: 6, out: 17},
-		{name: "an unknown height falls back", height: 0, chrome: 5, out: defaultVisible},
-		{name: "the cap wins when it is lower", maxVisible: 5, height: 24, chrome: 5, out: 5},
-		{name: "the cap is ignored when it is higher", maxVisible: 50, height: 24, chrome: 5, out: 18},
-		{name: "a tiny terminal still draws rows", height: 5, chrome: 5, out: minVisible},
+		{name: "leaves room for the lines around the rows and a spare one", height: 24, out: 18},
+		{name: "a note costs one row", height: 24, note: "a note", out: 17},
+		{name: "an unknown height falls back", height: 0, out: defaultVisible},
+		{name: "the cap wins when it is lower", maxVisible: 5, height: 24, out: 5},
+		{name: "the cap is ignored when it is higher", maxVisible: 50, height: 24, out: 18},
+		{name: "a tiny terminal still draws rows", height: 5, out: minVisible},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := visibleRows(testCase.maxVisible, testCase.height, testCase.chrome); got != testCase.out {
-				t.Errorf("visibleRows(%d, %d, %d) = %d, want %d",
-					testCase.maxVisible, testCase.height, testCase.chrome, got, testCase.out)
+			l := newList(Options{Items: []Item{{Cells: []string{"a"}}}, Note: testCase.note, MaxVisible: testCase.maxVisible}, testCase.height, false)
+			if got := l.visible; got != testCase.out {
+				t.Errorf("visible with MaxVisible %d on %d rows = %d, want %d",
+					testCase.maxVisible, testCase.height, got, testCase.out)
 			}
 		})
+	}
+}
+
+// A terminal too short for the whole block keeps the rows and gives up the
+// lines around them, so the block never grows taller than the screen: that
+// would scroll it, and every redraw would leave a title behind.
+func TestShortTerminalGivesUpTheLinesAroundTheRows(t *testing.T) {
+	for _, testCase := range []struct {
+		height int
+		note   string
+		want   frame
+	}{
+		{height: 10, note: "n", want: frame{title: true, note: true, gapAbove: true, rows: 3, gapBelow: true, position: true, hint: true}},
+		{height: 9, note: "n", want: frame{title: true, gapAbove: true, rows: 3, gapBelow: true, position: true, hint: true}},
+		{height: 8, want: frame{title: true, gapAbove: true, rows: 3, position: true, hint: true}},
+		{height: 7, want: frame{title: true, rows: 3, position: true, hint: true}},
+		{height: 6, want: frame{title: true, rows: 3, position: true}},
+		{height: 5, want: frame{title: true, rows: 3}},
+		{height: 4, want: frame{title: true, rows: 2}},
+		{height: 3, want: frame{title: true, rows: 1}},
+		{height: 2, want: frame{rows: 1}},
+		{height: 1, want: frame{rows: 1}},
+	} {
+		l := numbered(t, 0, 10)
+		l.note = testCase.note
+		l.resize(0, testCase.height)
+		if l.frame != testCase.want {
+			t.Errorf("height %d: frame = %+v, want %+v", testCase.height, l.frame, testCase.want)
+		}
+		l.apply(key{kind: keyEnd})
+		lines := l.render(60)
+		if most := max(testCase.height-1, 1); len(lines) > most {
+			t.Errorf("height %d: %d lines drawn, want %d at most", testCase.height, len(lines), most)
+		}
+		if !slices.ContainsFunc(lines, func(line string) bool { return strings.HasPrefix(line, cursorMarker) }) {
+			t.Errorf("height %d: the row under the cursor is not drawn: %q", testCase.height, lines)
+		}
 	}
 }
 
@@ -234,6 +275,7 @@ func TestRenderBlock(t *testing.T) {
 	l := testList(t, 3, []string{"1.4.24", "active"}, []string{"1.4.23", ""},
 		[]string{"1.4.21", "inactive"}, []string{"1.4.19", "inactive"})
 	l.note = "Nothing else on this release line."
+	l.resize(3, 0)
 
 	lines := l.render(100)
 	want := []string{
@@ -555,5 +597,191 @@ func TestMutedRowRecedesButCanBePicked(t *testing.T) {
 	}
 	if got := l.apply(key{kind: keyEnter}); got != actionSelect {
 		t.Errorf("Enter on a muted row = %v, want it selected", got)
+	}
+}
+
+// controlFree reports whether line holds nothing but text and, where styled
+// is set, the colors the list itself paints.
+func controlFree(line string, styled bool) bool {
+	if styled {
+		line = stripSGR(line)
+	}
+	return !strings.ContainsFunc(line, func(r rune) bool {
+		return r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || bidiControl(r) || lineBreak(r)
+	})
+}
+
+// Rows are made of what a server or a repository holds. An escape sequence
+// in it must not reach the terminal, where it could clear the screen or
+// write the clipboard, and a line break or a tab must not make a row take
+// more of the screen than the redraw counts.
+func TestCallerTextIsDrawnPlain(t *testing.T) {
+	items := []Item{
+		{
+			Cells:   []string{"#31 fix\x1b]52;c;cm0gLXJmIH4=\x07\x1b[2J parser\nSigned-off-by: bob", "al\tice\r"},
+			Action:  "merge\x1b[1A",
+			Flag:    "new\u009b2J",
+			Detail:  "d\x1b]0;pwned\x07",
+			Details: []Field{{Text: "by\u202e bob\n"}},
+		},
+		{Cells: []string{"two"}},
+	}
+	opts := Options{
+		Title:   "Merge\x1b[2J which %s?\n",
+		Subject: "pull\trequest",
+		Note:    "note\x1b[31m in red\x1b[0m\r\nsecond line",
+		Hint:    "keys\x07",
+		Items:   items,
+		Views:   []View{{Name: "all\x1b[2J", Title: "Merge\x1b[2J which %s?"}, {Name: "mine\n", Groups: []string{"mine"}}},
+	}
+	for _, color := range []bool{false, true} {
+		l := newList(opts, 24, color)
+		for _, n := range []int{200, 40} {
+			lines := l.render(n)
+			for i, line := range lines {
+				if !controlFree(line, color) {
+					t.Errorf("color %v, width %d: line %d carries a control character: %q", color, n, i, line)
+				}
+				if rows := term.ScreenRows([]string{line}, n); rows != 1 {
+					t.Errorf("color %v, width %d: line %d takes %d rows: %q", color, n, i, rows, line)
+				}
+			}
+		}
+	}
+
+	l := newList(opts, 24, false)
+	l.apply(key{kind: keyDown})
+	l.apply(key{kind: keyUp})
+	lines := l.render(200)
+	if got, want := lines[0], "Merge which pull request? · by bob "; got != want {
+		t.Errorf("title = %q, want %q", got, want)
+	}
+	if got, want := lines[1], "note in red  second line"; got != want {
+		t.Errorf("note = %q, want %q", got, want)
+	}
+	if got, want := lines[3], "❯ #31 fix parser Signed-off-by: bob new  al ice   merge"; got != want {
+		t.Errorf("row = %q, want %q", got, want)
+	}
+	if got, want := lines[len(lines)-2], "1 of 2     · [all] · mine "; got != want {
+		t.Errorf("position line = %q, want %q", got, want)
+	}
+	if got, want := lines[len(lines)-1], "keys"; got != want {
+		t.Errorf("key line = %q, want %q", got, want)
+	}
+	// The rows drawn are the list's own: the caller's stay as they were.
+	if items[0].Action != "merge\x1b[1A" || items[0].Cells[1] != "al\tice\r" || items[0].Details[0].Text != "by\u202e bob\n" {
+		t.Errorf("the caller's items were changed: %+v", items[0])
+	}
+}
+
+// The spaces of a text are the caller's: only what cannot be drawn in a line
+// goes.
+func TestPlainLineKeepsSpaces(t *testing.T) {
+	for in, want := range map[string]string{
+		"Password: ":                  "Password: ",
+		"  two  spaces  ":             "  two  spaces  ",
+		"a\u00a0b\u3000c":             "a\u00a0b\u3000c",
+		"line\nbreak\ttab\rreturn":    "line break tab return",
+		"esc\x1b[2J\x1b]0;t\x07 ape":  "esc ape",
+		"c1\u009b2Jx \u009d0;t\u009c": "c1x ",
+		"bidi\u202eexe.pdf":           "bidiexe.pdf",
+		"bad\xff utf8":                "bad\ufffd utf8",
+		"👨\u200d👩\u200d👧 e\u0301":     "👨\u200d👩\u200d👧 e\u0301",
+		"":                            "",
+	} {
+		if got := plainLine(in); got != want {
+			t.Errorf("plainLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A terminal that went away closes the input for good, however the read
+// reports it: nobody is left to answer.
+func TestDriveTakesAClosedInputForAnInterrupt(t *testing.T) {
+	l := testList(t, 5, []string{"a"})
+	failure := fmt.Errorf("read /dev/stdin: %w", os.ErrClosed)
+	err := drive(l, &renderer{w: io.Discard}, fixedSize(80, 24), 0, &scriptedInput{err: failure})
+	if !errors.Is(err, ErrInterrupted) {
+		t.Errorf("drive() error = %v, want ErrInterrupted", err)
+	}
+}
+
+// What was typed past the answer of one prompt is the start of the answer to
+// the next: a pasted pair of answers arrives in a single read.
+func TestTypeAheadGoesToTheNextPrompt(t *testing.T) {
+	source := &scriptedInput{chunks: [][]byte{[]byte("abc\r\ndef\r21\r\x1b[B")}, noGrace: true}
+	first := newEditor(InputOptions{Prompt: "First: "}, false)
+	if err := drive(first, &renderer{w: io.Discard}, fixedSize(80, 24), 0, source); err != nil || first.answer() != "abc" {
+		t.Fatalf("first prompt: %q, %v; want abc", first.answer(), err)
+	}
+	second := newEditor(InputOptions{Prompt: "Second: "}, false)
+	if err := drive(second, &renderer{w: io.Discard}, fixedSize(80, 24), 0, source); err != nil || second.answer() != "def" {
+		t.Fatalf("second prompt: %q, %v; want def", second.answer(), err)
+	}
+	l := testList(t, 5, []string{"1.4.24"}, []string{"1.4.23"}, []string{"1.4.21"})
+	if err := drive(l, &renderer{w: io.Discard}, fixedSize(80, 24), 0, source); err != nil || l.selected() != 2 {
+		t.Fatalf("third prompt: selected %d, %v; want the filtered row 2", l.selected(), err)
+	}
+	// Going back keeps what follows too; Ctrl-C drops it.
+	source = &scriptedInput{chunks: [][]byte{[]byte("\x7fxy")}, noGrace: true}
+	back := newList(Options{Items: []Item{{Cells: []string{"a"}}}, DismissOnBackspace: true}, 24, false)
+	if err := drive(back, &renderer{w: io.Discard}, fixedSize(80, 24), 0, source); !errors.Is(err, ErrBack) || len(source.chunks) != 1 || string(source.chunks[0]) != "xy" {
+		t.Errorf("going back: err %v, kept %q; want ErrBack and the keys after it", err, source.chunks)
+	}
+	source = &scriptedInput{chunks: [][]byte{[]byte("a\x03rest")}, noGrace: true}
+	e := newEditor(InputOptions{}, false)
+	if err := drive(e, &renderer{w: io.Discard}, fixedSize(80, 24), 0, source); !errors.Is(err, ErrInterrupted) || len(source.chunks) != 0 {
+		t.Errorf("Ctrl-C: err %v, %d chunks kept; want an interrupt that keeps nothing", err, len(source.chunks))
+	}
+}
+
+// A flag never takes the place of the name it marks: in a column too narrow
+// for both, the name keeps its room and the flag is shortened or left out.
+func TestFlagLeavesTheNameItsRoom(t *testing.T) {
+	l := newList(Options{Items: []Item{
+		{Cells: []string{"payments-service-production", "eu-central-1 frankfurt", "running since yesterday"}, Flag: "deprecated"},
+		{Cells: []string{"payments-service-staging", "eu-central-1 frankfurt", "running since yesterday"}},
+	}}, 24, false)
+	for n, want := range map[int]string{
+		80: "❯ payments-service-… deprecated  eu-central-1 frankfurt  running since yesterday",
+		44: "❯ payment… de…  eu-central-1…  running sinc…",
+		36: "❯ payment… …  eu-centra…  running s…",
+		32: "❯ payment…  eu-centr…  running …",
+	} {
+		got := l.renderRow(0, n)
+		if got != want {
+			t.Errorf("width %d: row = %q, want %q", n, got, want)
+		}
+		if width(got) > n {
+			t.Errorf("width %d: row is %d cells wide", n, width(got))
+		}
+	}
+}
+
+// A row of the typed name that the view hides cannot be chosen, so it does
+// not keep the text from being offered as an answer.
+func TestTypedRowIsNotWithheldByAHiddenRow(t *testing.T) {
+	l := newList(Options{
+		Items: []Item{{Cells: []string{"staging"}, Groups: []string{"mine"}}, {Cells: []string{"prod"}, Groups: []string{"theirs"}}},
+		Views: []View{{Name: "mine", Groups: []string{"mine"}}, {Name: "theirs", Groups: []string{"theirs"}}},
+		Typed: func(string) bool { return true },
+	}, 24, false)
+	typeText(l, "prod")
+	if l.selected() != l.typedIndex() {
+		t.Fatalf("selected() = %d over matches %v, want the typed row", l.selected(), l.matches)
+	}
+	// In the view that shows the row, the row itself is the answer.
+	l.apply(key{kind: keyTab})
+	if len(l.matches) != 1 || l.selected() != 1 {
+		t.Errorf("matches %v, selected %d; want only the row named prod", l.matches, l.selected())
+	}
+
+	l = newList(Options{
+		Items: []Item{{Cells: []string{"prod"}, Match: "live"}},
+		Typed: func(string) bool { return true },
+	}, 24, false)
+	typeText(l, "prod")
+	if l.selected() != l.typedIndex() {
+		t.Errorf("selected() = %d, want the typed row when the filter hides the row of that name", l.selected())
 	}
 }

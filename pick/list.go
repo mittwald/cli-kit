@@ -2,6 +2,7 @@ package pick
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -10,11 +11,21 @@ import (
 )
 
 const (
-	// minVisible is the smallest row window the list draws; a terminal too
-	// short for it scrolls rather than dropping the list.
+	// minVisible is how many rows a block keeps on screen before it gives up
+	// the lines around them: on a terminal too short for both, the rows are
+	// what the prompt is for.
 	minVisible = 3
 	// defaultVisible caps the rows drawn when the terminal height is unknown.
 	defaultVisible = 15
+)
+
+// loadState is how far a view that loads its rows has come.
+type loadState int
+
+const (
+	loadWaiting loadState = iota
+	loadRunning
+	loadDone
 )
 
 // list is the selection state: the items, the filter, and where the cursor
@@ -35,8 +46,11 @@ type list struct {
 	// fields are the searchable parts of every item, lowered once.
 	fields [][]MatchField
 
-	color   bool
-	theme   theme.Theme
+	color bool
+	theme theme.Theme
+	// frame is what the block keeps of the lines around the rows on the
+	// terminal it is drawn on, and visible how many rows that leaves.
+	frame   frame
 	visible int
 
 	filter []rune
@@ -52,12 +66,14 @@ type list struct {
 	views    []View
 	view     int
 	scoped   bool
-	loaded   []bool
+	loads    []loadState
 	failures []string
-	pending  bool
-	// pendingKey is the key of the row selected when the pending view was
-	// switched to, for the cursor to land on once its rows are loaded.
+	// pendingKey is the key of the row selected when a view still loading
+	// was switched to, for the cursor to land on once its rows are there.
 	pendingKey string
+	// initial is Options.Initial for as long as the view the list opened on
+	// is still loading its rows: the item it names is not there before.
+	initial int
 
 	typed     func(string) bool
 	typedNote string
@@ -87,14 +103,14 @@ type list struct {
 
 func newList(opts Options, height int, color bool) *list {
 	l := &list{
-		title:              opts.Title,
-		subject:            opts.Subject,
-		note:               opts.Note,
-		fallback:           opts.Title,
+		title:              plainLine(opts.Title),
+		subject:            plainLine(opts.Subject),
+		note:               plainLine(opts.Note),
+		fallback:           plainLine(opts.Title),
 		color:              color,
 		theme:              theme.Active(),
 		typed:              opts.Typed,
-		typedNote:          opts.TypedNote,
+		typedNote:          plainLine(opts.TypedNote),
 		multi:              opts.multi,
 		marked:             map[int]bool{},
 		cellStyles:         opts.CellStyles,
@@ -103,61 +119,100 @@ func newList(opts Options, height int, color bool) *list {
 		priorities:         opts.ColumnPriority,
 		truncation:         opts.ColumnTruncation,
 		rangeMode:          opts.Range,
-		unit:               opts.RangeUnit,
+		unit:               plainLine(opts.RangeUnit),
 		anchor:             -1,
-		keyLine:            opts.Hint,
+		keyLine:            plainLine(opts.Hint),
 		nested:             opts.Nested,
 		dismissOnBackspace: opts.DismissOnBackspace,
 	}
-	switch {
-	case opts.scoped():
-		l.scoped = true
-		l.views = slices.Clone(opts.Views)
-	case len(opts.Views) > 1:
-		l.views = opts.Views
+	l.scoped = opts.scoped()
+	if l.scoped || len(opts.Views) > 1 {
+		l.views = plainViews(opts.Views)
 	}
-	l.loaded = make([]bool, len(l.views))
+	l.loads = make([]loadState, len(l.views))
 	l.failures = make([]string, len(l.views))
 	if opts.View > 0 && opts.View < len(l.views) {
 		l.view = opts.View
 	}
 	if lens := opts.Lens; lens != nil {
-		l.filter = []rune(lens.Filter)
-		for i, view := range l.views {
-			if view.Name == lens.View {
-				l.view = i
+		l.filter = []rune(plainLine(lens.Filter))
+		// A lens that names no view leaves the one the options ask for.
+		if lens.View != "" {
+			for i := range l.views {
+				if l.viewLabel(i) == lens.View {
+					l.view = i
+					break
+				}
 			}
 		}
 	}
 	l.applyViewTitle()
 	if l.scoped {
 		l.setItems(l.views[l.view].Items)
-		l.pending = l.needsLoad()
 	} else {
 		l.setItems(opts.Items)
 	}
-	l.visible = visibleRows(opts.MaxVisible, height, l.chrome())
+	l.resize(opts.MaxVisible, height)
 	l.applyFilter()
-	// Initial names an item, and the cursor stands among the matches: an item
-	// the filter or view hides leaves the cursor on the first row shown.
-	if opts.Initial > 0 {
-		for i, index := range l.matches {
-			if index == opts.Initial {
-				l.cursor = i
-				break
-			}
-		}
+	if l.needsLoad() {
+		l.initial = opts.Initial
 	}
+	l.moveToItem(opts.Initial)
 	l.scrollToCursor()
 	return l
 }
 
-// setItems makes items the rows on screen.
+// plainViews copies the views with what they draw made plain text. The copy
+// is the list's own, so rows a view loads never show up in the caller's.
+func plainViews(views []View) []View {
+	plain := slices.Clone(views)
+	for i := range plain {
+		plain[i].Name = plainLine(plain[i].Name)
+		plain[i].Title = plainLine(plain[i].Title)
+		plain[i].Loading = plainLine(plain[i].Loading)
+		plain[i].Empty = plainLine(plain[i].Empty)
+	}
+	return plain
+}
+
+// viewLabel names a view in the status line and in a Lens: its name, or its
+// position, counted from 1, when it has none.
+func (l *list) viewLabel(view int) string {
+	return firstNonEmpty(l.views[view].Name, strconv.Itoa(view+1))
+}
+
+// moveToItem puts the cursor on the item with the index Options.Initial
+// names. Initial names an item, and the cursor stands among the matches: an
+// item the filter or view hides, or an index out of range, leaves the cursor
+// where it is, on the first row shown.
+func (l *list) moveToItem(index int) {
+	if index <= 0 {
+		return
+	}
+	if position := slices.Index(l.matches, index); position >= 0 {
+		l.cursor = position
+	}
+}
+
+// setItems makes items the rows on screen: copies of them, with everything
+// a row draws made plain text. What the filter searches and what identifies
+// a row is left as the caller gave it.
 func (l *list) setItems(items []Item) {
-	l.items = items
+	l.items = make([]Item, len(items))
 	l.given = len(items)
 	l.fields = make([][]MatchField, len(items))
 	for i, item := range items {
+		item.Cells = plainLines(item.Cells)
+		item.Action = plainLine(item.Action)
+		item.Flag = plainLine(item.Flag)
+		item.Detail = plainLine(item.Detail)
+		if len(item.Details) > 0 {
+			item.Details = slices.Clone(item.Details)
+			for j := range item.Details {
+				item.Details[j].Text = plainLine(item.Details[j].Text)
+			}
+		}
+		l.items[i] = item
 		l.fields[i] = item.matchFields()
 	}
 }
@@ -171,42 +226,88 @@ func (l *list) switchable() bool { return len(l.views) > 1 }
 func (l *list) lens(was Lens) Lens {
 	view := was.View
 	if len(l.views) > 0 {
-		view = l.views[l.view].Name
+		view = l.viewLabel(l.view)
 	}
 	return Lens{Filter: string(l.filter), View: view}
 }
 
-// chrome is how many lines the block spends on something other than rows:
-// the title, the blank line under it, the blank line under the rows, the
-// position line, the key line, and the note where there is one.
-func (l *list) chrome() int {
-	if l.note == "" {
-		return 5
-	}
-	return 6
+// frame is what a block draws around its rows, and how many rows it shows.
+// The lines are listed in the order they are drawn.
+type frame struct {
+	title    bool
+	note     bool
+	gapAbove bool
+	rows     int
+	gapBelow bool
+	position bool
+	hint     bool
 }
 
-// visibleRows leaves room for the lines around the rows plus one spare, so
-// the whole block fits on screen: a block taller than the terminal would
-// scroll, and the in-place redraw would then repaint the wrong lines.
-func visibleRows(maxVisible, height, chrome int) int {
-	rows := defaultVisible
-	if height > 0 {
-		rows = height - chrome - 1
+// fitFrame lays a block out on a terminal height rows tall, leaving one row
+// spare so the block never fills the screen: a block taller than the
+// terminal would scroll it, and the in-place redraw would then repaint the
+// wrong lines.
+//
+// want is how many rows the block would show given the room, note whether it
+// has a note, and counted whether its position line is always there (a list)
+// or only while some rows are out of sight (a set of switches). A terminal
+// too short for the whole block gives up the lines around the rows, one
+// after the other, until minVisible rows fit: first the note, then the blank
+// lines, the key line and the position line. The title goes last, when
+// there is not even room for it and one row. An unknown height (0 or less)
+// keeps everything.
+func fitFrame(height, want int, note, counted bool) frame {
+	f := frame{title: true, note: note, gapAbove: true, gapBelow: true, position: true, hint: true}
+	want = max(want, 1)
+	if height <= 0 {
+		f.rows = want
+		f.position = counted
+		return f
 	}
-	if maxVisible > 0 && maxVisible < rows {
-		rows = maxVisible
+	room := max(height-1, 1)
+	fill := func() {
+		rows := room
+		for _, line := range []bool{f.title, f.note, f.gapAbove, f.gapBelow, f.hint} {
+			if line {
+				rows--
+			}
+		}
+		if f.position && (counted || rows < want) {
+			rows--
+		}
+		f.rows = min(rows, want)
 	}
-	return max(rows, minVisible)
+	enough := min(want, minVisible)
+	fill()
+	for _, line := range []*bool{&f.note, &f.gapBelow, &f.gapAbove, &f.hint, &f.position} {
+		if f.rows >= enough {
+			break
+		}
+		*line = false
+		fill()
+	}
+	if f.rows < 1 {
+		f.title = false
+		fill()
+	}
+	f.position = f.position && (counted || f.rows < want)
+	return f
 }
 
-// resize re-derives the row window after a terminal size change.
+// resize lays the block out again after a terminal size change.
 func (l *list) resize(maxVisible, height int) {
-	rows := visibleRows(maxVisible, height, l.chrome())
-	if rows == l.visible {
+	want := math.MaxInt
+	if height <= 0 {
+		want = defaultVisible
+	}
+	if maxVisible > 0 {
+		want = min(want, max(maxVisible, minVisible))
+	}
+	fitted := fitFrame(height, want, l.note != "", true)
+	if fitted == l.frame {
 		return
 	}
-	l.visible = rows
+	l.frame, l.visible = fitted, fitted.rows
 	l.scrollToCursor()
 }
 
@@ -279,7 +380,7 @@ func (l *list) apply(k key) action {
 	case keyBack:
 		if l.anchor >= 0 {
 			// Esc drops an open range before it leaves the list.
-			l.anchor = -1
+			l.closeRange()
 			return actionNone
 		}
 		return actionBack
@@ -332,17 +433,39 @@ func (l *list) apply(k key) action {
 }
 
 // openRange anchors a range on the row under the cursor. The filter is
-// cleared with it: a row hidden between the two ends would end up inside a
-// range nobody could see.
+// cleared with it, and a view that narrows the rows is set aside for as long
+// as the range is open: a row hidden between the two ends would end up
+// inside a range nobody could see.
 func (l *list) openRange() {
 	item := l.selected()
 	l.anchor = l.cursor
-	if len(l.filter) > 0 {
-		l.setFilter(nil)
+	if len(l.filter) > 0 || l.narrowed() {
+		l.filter = nil
+		// With the anchor set, applyFilter leaves the view out.
+		l.applyFilter()
 		l.anchor = max(slices.Index(l.matches, item), 0)
 		l.cursor = l.anchor
 		l.scrollToCursor()
 	}
+}
+
+// closeRange drops the open range. The view the range set aside narrows the
+// rows again, and the cursor stays on its row where the view shows it.
+func (l *list) closeRange() {
+	item := l.selected()
+	l.anchor = -1
+	if !l.narrowed() {
+		return
+	}
+	l.applyFilter()
+	l.cursor = max(slices.Index(l.matches, item), 0)
+	l.scrollToCursor()
+}
+
+// narrowed reports whether the view the list stands on shows only some of
+// the items.
+func (l *list) narrowed() bool {
+	return !l.scoped && len(l.views) > 0 && len(l.views[l.view].Groups) > 0
 }
 
 // switchView moves delta views along, wrapping at both ends. It does nothing
@@ -363,9 +486,10 @@ func (l *list) switchView(delta int) {
 		key = l.items[index].Key
 	}
 	l.view = (l.view + delta + n) % n
-	l.pending = l.needsLoad()
+	// Initial was about the view the list opened on.
+	l.initial = 0
 	l.pendingKey = ""
-	if l.pending {
+	if l.loading() {
 		l.pendingKey = key
 	}
 	l.loadView(key)
@@ -387,6 +511,12 @@ func (l *list) loadView(key string) {
 	l.setItems(view.Items)
 	l.cursor, l.top = 0, 0
 	l.applyFilter()
+	// The view the list opened on starts where Options.Initial says, also
+	// when its rows only arrive now.
+	if !l.loading() {
+		l.moveToItem(l.initial)
+		l.initial = 0
+	}
 	if key != "" {
 		for position, index := range l.matches {
 			if l.items[index].Key == key {
@@ -398,35 +528,56 @@ func (l *list) loadView(key string) {
 	l.scrollToCursor()
 }
 
-// needsLoad reports whether the current view still has to fetch its rows.
+// needsLoad reports whether the current view has rows to fetch and nobody
+// fetching them yet.
 func (l *list) needsLoad() bool {
-	return l.scoped && l.views[l.view].Load != nil && !l.loaded[l.view]
+	return l.scoped && l.views[l.view].Load != nil && l.loads[l.view] == loadWaiting
 }
 
-func (l *list) loadPending() bool { return l.pending }
+// loading reports whether the current view is still without the rows it
+// loads: the fetch has not started yet, or has not come back.
+func (l *list) loading() bool {
+	return l.scoped && l.views[l.view].Load != nil && l.loads[l.view] != loadDone
+}
 
-// runPendingLoad fetches the current view's rows. The key loop runs it
-// between two draws, so the view and its loading line are on screen while
-// the fetch blocks.
-func (l *list) runPendingLoad() {
-	l.pending = false
-	key := l.pendingKey
-	l.pendingKey = ""
-	view := l.views[l.view]
-	if view.Load == nil || l.loaded[l.view] {
-		return
+// nextLoad hands the key loop the fetch of the current view's rows, once:
+// a function that calls the view's Load, to be run off the key loop, whose
+// result takes the rows into the list, back on the key loop. The key loop
+// asks after a draw, so the view and its loading line are on screen while
+// the fetch runs, and the list keeps taking keys meanwhile: Esc leaves it,
+// Tab moves on to another view, and typing already filters what is to come.
+func (l *list) nextLoad() func() func() {
+	if !l.needsLoad() {
+		return nil
 	}
-	l.loaded[l.view] = true
-	items, err := view.Load()
+	view := l.view
+	load := l.views[view].Load
+	l.loads[view] = loadRunning
+	return func() func() {
+		items, err := load()
+		return func() { l.finishLoad(view, items, err) }
+	}
+}
+
+// finishLoad takes the rows a view loaded. They go on screen when the list
+// still stands on that view, with the cursor on the row it was to land on,
+// and are kept for the view otherwise.
+func (l *list) finishLoad(view int, items []Item, err error) {
+	l.loads[view] = loadDone
 	if err != nil {
 		// Whatever was gathered before the failure is still worth showing;
 		// with nothing gathered, the rows the view already had stay.
-		l.failures[l.view] = err.Error()
+		l.failures[view] = plainLine(err.Error())
 		if len(items) == 0 {
 			return
 		}
 	}
-	l.views[l.view].Items = items
+	l.views[view].Items = items
+	if view != l.view {
+		return
+	}
+	key := l.pendingKey
+	l.pendingKey = ""
 	l.loadView(key)
 }
 
@@ -513,8 +664,9 @@ func (l *list) applyFilter() {
 	l.matches = l.matches[:0]
 	for i := range l.items {
 		// A typed row that was marked shows in every view: it is of no
-		// group the views know.
-		if !l.scoped && len(l.views) > 0 && i < l.given && !l.views[l.view].shows(l.items[i]) {
+		// group the views know. And an open range shows every row, since
+		// every row between its ends is part of it.
+		if l.narrowed() && l.anchor < 0 && i < l.given && !l.views[l.view].shows(l.items[i]) {
 			continue
 		}
 		if matchesTerms(l.fields[i], terms) {
@@ -540,14 +692,16 @@ func (l *list) typedIndex() int { return len(l.items) }
 func (l *list) typedText() string { return strings.TrimSpace(string(l.filter)) }
 
 // offersTyped reports whether the filter is itself an answer: the caller
-// accepts it, and no row is named by it already.
+// accepts it, and no row on offer is named by it already. A row of that name
+// which the view or the filter hides cannot be chosen in its place, so it
+// does not stand in the way.
 func (l *list) offersTyped() bool {
 	text := l.typedText()
 	if l.typed == nil || text == "" || !l.typed(text) {
 		return false
 	}
-	for _, item := range l.items {
-		if len(item.Cells) > 0 && item.Cells[0] == text {
+	for _, index := range l.matches {
+		if item := l.items[index]; len(item.Cells) > 0 && item.Cells[0] == text {
 			return false
 		}
 	}
@@ -609,12 +763,16 @@ func (l *list) render(width int) []string {
 	}
 	th := l.theme
 	widths := l.fittedWidths(width)
-	lines := make([]string, 0, l.visible+l.chrome())
-	lines = append(lines, l.renderTitle(width))
-	if l.note != "" {
+	lines := make([]string, 0, l.visible+6)
+	if l.frame.title {
+		lines = append(lines, l.renderTitle(width))
+	}
+	if l.frame.note {
 		lines = append(lines, l.styled(th.Muted, cut(l.note, width)))
 	}
-	lines = append(lines, "")
+	if l.frame.gapAbove {
+		lines = append(lines, "")
+	}
 	end := min(l.top+l.visible, len(l.matches))
 	for position := l.top; position < end; position++ {
 		lines = append(lines, l.renderRowWith(position, width, widths))
@@ -623,9 +781,15 @@ func (l *list) render(width int) []string {
 		text, style := l.emptyLine()
 		lines = append(lines, l.styled(style, cut(text, width)))
 	}
-	lines = append(lines, "")
-	lines = append(lines, l.renderPosition(width))
-	lines = append(lines, l.styled(th.Muted, l.hint(width)))
+	if l.frame.gapBelow {
+		lines = append(lines, "")
+	}
+	if l.frame.position {
+		lines = append(lines, l.renderPosition(width))
+	}
+	if l.frame.hint {
+		lines = append(lines, l.styled(th.Muted, l.hint(width)))
+	}
 	return lines
 }
 
@@ -637,7 +801,7 @@ func (l *list) emptyLine() (string, theme.Style) {
 		view = l.views[l.view]
 	}
 	switch {
-	case l.pending:
+	case l.loading():
 		return "  " + firstNonEmpty(view.Loading, "loading…"), l.theme.Muted
 	case len(l.views) > 0 && l.failures[l.view] != "":
 		return "  " + l.failures[l.view], l.theme.Warning
@@ -775,16 +939,18 @@ func (l *list) positionParts() []positionPart {
 	}
 	parts := []positionPart{{text: count}}
 	if l.switchable() {
-		for i, view := range l.views {
-			label := firstNonEmpty(view.Name, strconv.Itoa(i+1))
-			if i == l.view {
+		// A view an open range has set aside is not the one in force.
+		inForce := l.anchor < 0 || !l.narrowed()
+		for i := range l.views {
+			label := l.viewLabel(i)
+			if i == l.view && inForce {
 				parts = append(parts, positionPart{text: separator}, positionPart{text: "[" + label + "]", active: true})
 				continue
 			}
 			parts = append(parts, positionPart{text: separator + label})
 		}
 	}
-	if l.pending {
+	if l.loading() {
 		parts = append(parts, positionPart{text: separator + firstNonEmpty(l.views[l.view].Loading, "loading…")})
 	} else if len(l.views) > 0 && l.failures[l.view] != "" && len(l.items) > 0 {
 		// With no rows at all the failure stands in their place instead.

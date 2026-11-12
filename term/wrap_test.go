@@ -24,6 +24,12 @@ func TestWrap(t *testing.T) {
 		"wide runes":          {"日本語 日本語", 8, "", "日本語\n日本語"},
 		"space in escape":     {"\x1b[1 qcursor style kept whole", 12, "", "\x1b[1 qcursor style\nkept whole"},
 		"only spaces":         {"          ", 4, "", "          "},
+		"tab counts to stop":  {"a\tb c", 9, "", "a\tb\nc"},
+		"tab fits":            {"a\tb c", 11, "", "a\tb c"},
+		"tab after a word":    {"abcdef \tx y", 10, "", "abcdef \tx\ny"},
+		"tab on the new line": {"abcdef g\th i", 12, "  ", "abcdef\n  g\th i"},
+		"tab in the indent":   {"aaaa bbbb cccc", 14, "\t", "aaaa bbbb cccc"},
+		"tab indents":         {"aaaa bbbb cccc dddd", 14, "\t", "aaaa bbbb cccc\n\tdddd"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

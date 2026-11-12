@@ -47,3 +47,21 @@ func ExampleWrap() {
 	// Dry run: would tag 8.4.25 and push it,
 	//          then wait for its pipeline.
 }
+
+// A tab is as wide as the column it stands at makes it: it ends at the next
+// tab stop, every 8 columns.
+func ExampleWidthAt() {
+	fmt.Println(term.WidthAt("\tx", 0), term.WidthAt("\tx", 4))
+	// Output:
+	// 9 5
+}
+
+// A sentence's punctuation stays outside the link, and a hyperlink that is
+// already there is left as it is.
+func ExampleLinkify() {
+	fmt.Printf("%q\n", term.Linkify("See https://example.com/a_(b)."))
+	fmt.Printf("%q\n", term.Linkify(term.Hyperlink("https://example.com", "the docs")))
+	// Output:
+	// "See \x1b]8;;https://example.com/a_(b)\x1b\\https://example.com/a_(b)\x1b]8;;\x1b\\."
+	// "\x1b]8;;https://example.com\x1b\\the docs\x1b]8;;\x1b\\"
+}

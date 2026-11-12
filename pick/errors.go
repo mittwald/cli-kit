@@ -16,8 +16,11 @@ var ErrAborted = errors.New("prompt aborted")
 var ErrBack = fmt.Errorf("%w: went back", ErrAborted)
 
 // ErrInterrupted reports that a prompt was left with Ctrl-C or Ctrl-D, or that
-// its input was closed: the user wants out of the whole run, not just this
-// question. It matches [ErrAborted].
+// there is nobody left to answer it: its input ended or was closed, the
+// terminal went away, or the prompt was taken off the screen for the process
+// to end (by a signal, or by live.RestoreAll) and the application lived on.
+// The user wants out of the whole run, not just this question. It matches
+// [ErrAborted].
 var ErrInterrupted = fmt.Errorf("%w: interrupted", ErrAborted)
 
 // ErrNoItems reports that there was nothing to choose from. The caller knows

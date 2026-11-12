@@ -40,6 +40,7 @@ type Table struct {
 	align           []Align
 	recordLineJoin  string
 	cells           cellText
+	escapeFormulas  bool
 }
 
 // cellText is what a drawn table does with the escape sequences and control
@@ -108,14 +109,18 @@ func WithIndent(indent string) Option { return func(t *Table) { t.indent = inden
 func WithRowGap(on bool) Option { return func(t *Table) { t.rowGap = on } }
 
 // WithHeaderTransform changes how header cells are drawn, such as
-// strings.ToUpper. Record output keeps the headers as given to [New]: a
+// strings.ToUpper. fn gets the text of a header cell, never the escape
+// sequences a caller painted into it: a color or an OSC 8 link stays as it
+// is, parameters and URL included, and fn is called for each piece of text
+// between two of them. Record output keeps the headers as given to [New]: a
 // spreadsheet column reads better as "Date" than as "DATE".
 func WithHeaderTransform(fn func(string) string) Option {
 	return func(t *Table) { t.headerTransform = fn }
 }
 
 // UppercaseHeaders draws header cells in upper case, the way kubectl-style
-// listings do. Record output keeps the headers as given.
+// listings do. Escape sequences in a header cell keep their case, and record
+// output keeps the headers as given.
 func UppercaseHeaders() Option { return WithHeaderTransform(strings.ToUpper) }
 
 // WithColor decides whether header cells and rules are painted, instead of
@@ -137,6 +142,21 @@ func WithAlignment(aligns ...Align) Option {
 // and TSV output, where a record is one line. The default is "; ".
 func WithRecordLineJoin(sep string) Option { return func(t *Table) { t.recordLineJoin = sep } }
 
+// EscapeFormulas makes CSV and TSV output safe to open in a spreadsheet when
+// its cells hold text from elsewhere. A spreadsheet takes a cell that starts
+// with "=", "+", "-" or "@" for a formula, which can read other cells, fetch
+// a URL or start a program, and it skips a tab or a carriage return at the
+// start to get there. A header or row cell that starts with one of these
+// six, or with spaces and then one of the four, is written with a single
+// quote in front of it, which a spreadsheet shows as text. A cell that is
+// nothing but a number with a sign, such as "-12.5", is no formula and stays
+// as it is.
+//
+// The quote is part of the field for every other reader of the records,
+// which is why this is an option: use it for an export people open in a
+// spreadsheet, not for one a program parses. Drawn tables ignore it.
+func EscapeFormulas() Option { return func(t *Table) { t.escapeFormulas = true } }
+
 // SanitizeCells makes the cells of a drawn table, its header cells
 // included, safe to show when they hold text from elsewhere: each goes
 // through term.Sanitize, which keeps colors, the data's as much as the
@@ -157,11 +177,12 @@ func SanitizeCells() Option { return func(t *Table) { t.cells = cellsSanitized }
 func PlainCells() Option { return func(t *Table) { t.cells = cellsPlain } }
 
 // Append adds a row. Cells may carry escape sequences and newlines; a row
-// may be shorter or longer than the header. A drawn table shows them as
-// they are unless [SanitizeCells] or [PlainCells] says otherwise, so text
-// from elsewhere in a cell has to be made safe first, with one of these or
-// term.Sanitize or term.Plain; Markdown and record output make every cell
-// plain text.
+// may be shorter or longer than the header: the missing cells are empty, in
+// a drawn table and in records alike. A drawn table shows the cells as they
+// are, but for tabs and carriage returns, unless [SanitizeCells] or
+// [PlainCells] says otherwise, so text from elsewhere in a cell has to be
+// made safe first, with one of these or term.Sanitize or term.Plain;
+// Markdown and record output make every cell plain text.
 func (t *Table) Append(cells ...string) {
 	t.rows = append(t.rows, append([]string(nil), cells...))
 }
@@ -248,7 +269,9 @@ func (t *Table) alignment(col int) Align {
 
 // prepare returns the cells as they are drawn: headers transformed, line
 // endings normalized, made safe as the style or the cell option asks, and the
-// style's escaping and folding applied. The table's own cells stay untouched,
+// style's escaping and folding applied. Whichever way a cell is made, it
+// holds neither a tab nor a carriage return afterwards, so its width is the
+// same wherever on a line it is drawn. The table's own cells stay untouched,
 // so rendering twice gives the same output.
 func (t *Table) prepare() ([]string, [][]string) {
 	cell := func(s string) string {
@@ -260,7 +283,7 @@ func (t *Table) prepare() ([]string, [][]string) {
 		case t.cells == cellsSanitized:
 			s = sanitizedCell(strings.ReplaceAll(s, "\r\n", "\n"))
 		default:
-			s = strings.ReplaceAll(s, "\r\n", "\n")
+			s = shownCell(s)
 		}
 		if t.style.Flatten {
 			s = strings.ReplaceAll(s, "\n", t.style.lineBreak())
@@ -273,7 +296,7 @@ func (t *Table) prepare() ([]string, [][]string) {
 	headers := make([]string, len(t.headers))
 	for i, h := range t.headers {
 		if t.headerTransform != nil {
-			h = t.headerTransform(h)
+			h = transformText(h, t.headerTransform)
 		}
 		headers[i] = cell(h)
 	}
@@ -285,6 +308,83 @@ func (t *Table) prepare() ([]string, [][]string) {
 		}
 	}
 	return headers, rows
+}
+
+// transformText returns s with fn applied to its text and its escape
+// sequences left as they are, so a transform never rewrites the parameters
+// of a color or the URL of a link: upper-casing "ESC [1m" would make it
+// "ESC [1M", which deletes a line instead of setting bold.
+func transformText(s string, fn func(string) string) string {
+	if !strings.Contains(s, "\x1b") {
+		return fn(s)
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if n := term.EscapeLen(s[i:]); n > 0 {
+			b.WriteString(s[i : i+n])
+			i += n
+			continue
+		}
+		next := len(s)
+		if j := strings.IndexByte(s[i:], 0x1b); j >= 0 {
+			next = i + j
+		}
+		b.WriteString(fn(s[i:next]))
+		i = next
+	}
+	return b.String()
+}
+
+// tabStop is how far apart the tab stops are that a tab in a cell advances
+// to, as term counts them.
+const tabStop = 8
+
+// shownCell is a drawn cell that is shown as given: its escape sequences
+// stay. Only what would move the cursor off the cell's grid goes. A tab
+// becomes the spaces up to the next tab stop, counted from the start of the
+// cell's line: the stop a terminal would move to depends on the column the
+// cell is drawn at, so the same cell would be wider in one column than in
+// another. A carriage return that does not end a line is dropped: it would
+// draw the rest of the cell over the table to its left.
+func shownCell(s string) string {
+	if !strings.ContainsAny(s, "\t\r") {
+		return s
+	}
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "")
+	if !strings.Contains(s, "\t") {
+		return s
+	}
+	var b strings.Builder
+	column := 0
+	for i := 0; i < len(s); {
+		if n := term.EscapeLen(s[i:]); n > 0 {
+			b.WriteString(s[i : i+n])
+			i += n
+			continue
+		}
+		next := len(s)
+		if j := strings.IndexAny(s[i:], "\t\n\x1b"); j >= 0 {
+			next = i + j
+		}
+		b.WriteString(s[i:next])
+		column += term.WidthAt(s[i:next], column)
+		i = next
+		if i == len(s) {
+			break
+		}
+		switch s[i] {
+		case '\t':
+			spaces := tabStop - column%tabStop
+			b.WriteString(strings.Repeat(" ", spaces))
+			column += spaces
+			i++
+		case '\n':
+			b.WriteByte('\n')
+			column = 0
+			i++
+		}
+	}
+	return b.String()
 }
 
 // plainCell makes a cell of verbatim output plain text, as term.Plain does,
@@ -418,9 +518,9 @@ func (t *Table) renderFramed(w io.Writer, headers []string, rows [][]string, wid
 		}
 		segments := make([]string, len(widths))
 		for i, width := range widths {
-			segment := strings.Repeat(l.Fill, width+2*cellPadding)
-			if t.style.AlignMarkers && t.alignment(i) == AlignRight && width+2*cellPadding > 0 {
-				segment = strings.Repeat(l.Fill, width+2*cellPadding-1) + ":"
+			segment := fill(l.Fill, width+2*cellPadding)
+			if t.style.AlignMarkers && t.alignment(i) == AlignRight {
+				segment = fill(l.Fill, width+2*cellPadding-1) + ":"
 			}
 			segments[i] = segment
 		}
@@ -449,7 +549,10 @@ func (t *Table) renderFramed(w io.Writer, headers []string, rows [][]string, wid
 	if err := rule(t.style.Top); err != nil {
 		return err
 	}
-	if len(headers) > 0 {
+	// Where the header rule declares the columns, as in markdown, it is what
+	// makes the lines below a table: without headers it stands under an
+	// empty header row.
+	if len(headers) > 0 || (t.style.AlignMarkers && t.style.HeaderRule.Enabled()) {
 		if err := writeRow(headers, true); err != nil {
 			return err
 		}
@@ -468,4 +571,30 @@ func (t *Table) renderFramed(w io.Writer, headers []string, rows [][]string, wid
 		}
 	}
 	return rule(t.style.Bottom)
+}
+
+// fill returns a rule segment of exactly width cells: pattern repeated, and
+// for the cells left over the start of pattern, as much of it as fits, and
+// then spaces, where a wide character had to be left out. The cut-off start
+// is written without the escape sequences of pattern, so that none stays
+// open. A pattern of one cell, which every predefined style has, is repeated
+// width times.
+func fill(pattern string, width int) string {
+	cells := term.VisibleWidth(pattern)
+	if cells <= 0 || width <= 0 {
+		return strings.Repeat(" ", max(width, 0))
+	}
+	segment := strings.Repeat(pattern, width/cells)
+	left := width % cells
+	if left == 0 {
+		return segment
+	}
+	start := ""
+	for _, r := range term.StripANSI(pattern) {
+		if term.VisibleWidth(start+string(r)) > left {
+			break
+		}
+		start += string(r)
+	}
+	return segment + term.PadRight(start, left)
 }

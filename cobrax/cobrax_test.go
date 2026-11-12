@@ -356,7 +356,15 @@ func TestCompletionCache(t *testing.T) {
 	if _, err := cache.Get(nil, "scope", load); err != nil || calls != 2 { //nolint:staticcheck // A nil context is allowed.
 		t.Fatalf("an expired cache was used: calls %d, err %v", calls, err)
 	}
-	if _, err := cache.Get(context.Background(), "other", load); err != nil || calls != 3 {
+	// A file dated in the future is not fresh for ever.
+	future := time.Now().Add(48 * time.Hour)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.Get(context.Background(), "scope", load); err != nil || calls != 3 {
+		t.Fatalf("a cache file from the future was used: calls %d, err %v", calls, err)
+	}
+	if _, err := cache.Get(context.Background(), "other", load); err != nil || calls != 4 {
 		t.Fatalf("scopes share a cache entry: calls %d", calls)
 	}
 	info, err := os.Stat(filepath.Dir(path))
@@ -428,6 +436,28 @@ func TestCachedCompletion(t *testing.T) {
 		t.Errorf("cached completion = %q %s", candidates, directive)
 	}
 
+	// Names from elsewhere reach the shell only when they are plain text.
+	root = newRoot()
+	list, _, _ = root.Find([]string{"list"})
+	mustRegister(list, "name", CachedCompletion("example", "hostile", 0, 0, func(context.Context) ([]string, error) {
+		return []string{
+			"plain",
+			"with\tdescription",
+			"clip\x1b]52;c;ZXZpbA==\x07board",
+			"two\nlines",
+			"c1\u009b2Jcontrol",
+			"described\twith \x1b[31mcolor",
+			"\tno value",
+			"",
+		}, nil
+	}))
+	for range 2 { // Loaded, then read from the cache.
+		// The request asks for no descriptions, so cobra cuts them off.
+		if candidates, _ := complete(t, root, "list", "--name", ""); !slices.Equal(candidates, []string{"plain", "with"}) {
+			t.Errorf("hostile completion = %q", candidates)
+		}
+	}
+
 	root = newRoot()
 	list, _, _ = root.Find([]string{"list"})
 	mustRegister(list, "name", CachedCompletion("example", "failing", 0, 0, func(context.Context) ([]string, error) {
@@ -445,6 +475,7 @@ func spacedRoot() *cobra.Command {
 		deploy.Flags().Bool(name, false, name)
 	}
 	deploy.Flags().String("previous", "", "previous version")
+	deploy.Flags().StringP("message", "m", "", "message")
 	root.PersistentFlags().BoolP("verbose", "v", false, "verbose")
 	root.PersistentFlags().Bool("dry-run", false, "dry run")
 	root.PersistentFlags().String("output", "", "output format")
@@ -498,6 +529,21 @@ func TestJoinSpacedBoolValues(t *testing.T) {
 			[]string{"--output", "deploy", "status", "--stable", "false"},
 			[]string{"--output", "deploy", "status", "--stable", "false"}},
 		{"short flags are not candidates", []string{"-v", "false"}, []string{"-v", "false"}},
+		{"the value of a long flag is not a flag",
+			[]string{"deploy", "--previous", "--stable", "false"},
+			[]string{"deploy", "--previous", "--stable", "false"}},
+		{"the value of a short flag is not a flag",
+			[]string{"deploy", "-m", "--stable", "false"},
+			[]string{"deploy", "-m", "--stable", "false"}},
+		{"the value of a short flag ending a group is not a flag",
+			[]string{"deploy", "-vm", "--stable", "false"},
+			[]string{"deploy", "-vm", "--stable", "false"}},
+		{"a short flag carrying its value takes no other",
+			[]string{"deploy", "-mtext", "--stable", "false"},
+			[]string{"deploy", "-mtext", "--stable=false"}},
+		{"a flag with its value joined takes no other",
+			[]string{"deploy", "--previous=1.0", "--stable", "false"},
+			[]string{"deploy", "--previous=1.0", "--stable=false"}},
 		{"completion keeps the word being completed",
 			[]string{cobra.ShellCompRequestCmd, "deploy", "--active", "false", "--stable", "fal"},
 			[]string{cobra.ShellCompRequestCmd, "deploy", "--active=false", "--stable", "fal"}},
