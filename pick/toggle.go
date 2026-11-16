@@ -187,7 +187,7 @@ func (s *switches) values() []bool {
 // A set of switches has no cap on its rows the way a list has, so the
 // terminal alone decides.
 func (s *switches) resize(_, height int) {
-	s.frame = fitFrame(height, len(s.rows), s.note != "", false)
+	s.frame = fitFrame(height, len(s.rows), s.note != "", false, true)
 	s.visible = s.frame.rows
 	s.scrollToCursor()
 }

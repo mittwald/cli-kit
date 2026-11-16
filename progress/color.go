@@ -3,7 +3,6 @@ package progress
 import (
 	"math"
 	"strconv"
-	"strings"
 
 	"github.com/mittwald/cli-kit/term"
 )
@@ -61,15 +60,6 @@ func sgr(bg, fg Color, truecolor bool) string {
 
 func rgb(c Color) string {
 	return strconv.Itoa(int(c.R)) + ";" + strconv.Itoa(int(c.G)) + ";" + strconv.Itoa(int(c.B))
-}
-
-// truecolor reports whether colorterm, the value of the COLORTERM
-// environment variable, announces a terminal that takes 24-bit colors.
-// Terminals that do not take them read the parameters of a 24-bit color as
-// attributes of their own, so the bar paints them only where they are
-// announced.
-func truecolor(colorterm string) bool {
-	return strings.EqualFold(colorterm, "truecolor") || strings.EqualFold(colorterm, "24bit")
 }
 
 // gradientAt returns the gradient color of column out of width columns.

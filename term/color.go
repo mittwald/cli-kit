@@ -117,3 +117,19 @@ func Colored(w io.Writer) bool { return ShouldColor(CurrentColorMode(), w) }
 func CanAnimate(w io.Writer) bool {
 	return CurrentColorMode() != ColorNever && ColorAllowed() && IsTerminal(w) && !plainConsole(w)
 }
+
+// TrueColor reports whether the terminal announces 24-bit colors: the
+// COLORTERM environment variable is "truecolor" or "24bit", in any case.
+// Terminals that do not take 24-bit colors read the parameters of one as
+// attributes of their own, so paint them only where TrueColor holds, and
+// the nearest of the 256 colors ([Nearest256]) everywhere else.
+//
+// TrueColor says what the terminal can show, not whether output is painted
+// at all; that is still for [Colored] to decide.
+func TrueColor() bool { return trueColor(os.Getenv("COLORTERM")) }
+
+// trueColor reports whether colorterm, a value of COLORTERM, announces
+// 24-bit colors.
+func trueColor(colorterm string) bool {
+	return strings.EqualFold(colorterm, "truecolor") || strings.EqualFold(colorterm, "24bit")
+}

@@ -27,6 +27,10 @@ func (l *list) renderRowWith(position, n int, widths []int) string {
 	// Every row of an open range is lit, so the span reads as one block; the
 	// marker stays on the row the keys move.
 	lit := selected || l.inSpan(position)
+	// A row under a CursorRow background keeps the colors it has anywhere
+	// else; the background alone marks it.
+	highlight := lit && l.color && l.cursorRow != ""
+	strong := lit && !highlight
 
 	var b strings.Builder
 	left := n
@@ -51,9 +55,9 @@ func (l *list) renderRowWith(position, n int, widths []int) string {
 	if selected {
 		marker = cursorMarker
 	}
-	nameStyle, mutedStyle := l.nameStyle(lit), l.mutedStyle(lit)
+	nameStyle, mutedStyle := l.nameStyle(strong), l.mutedStyle(strong)
 	actionStyle := th.Action
-	if lit {
+	if strong {
 		actionStyle = th.SelectedAction
 	}
 	receded := false
@@ -61,7 +65,7 @@ func (l *list) renderRowWith(position, n int, widths []int) string {
 		// A row there is nothing to do with recedes as a whole; the cursor
 		// still shows on it, a step back from a choice.
 		nameStyle, mutedStyle = th.Muted, th.Muted
-		if lit {
+		if strong {
 			nameStyle, mutedStyle = th.SelectedQualifier, th.SelectedQualifier
 		}
 		receded = true
@@ -71,7 +75,11 @@ func (l *list) renderRowWith(position, n int, widths []int) string {
 		receded = true
 	}
 
-	write(marker, nameStyle)
+	markerStyle := nameStyle
+	if selected && l.cursorMark != "" {
+		markerStyle = l.cursorMark
+	}
+	write(marker, markerStyle)
 	if l.multi && !l.boxes {
 		write(strings.Repeat(" ", width(uncheckedBox+" ")), "")
 	}
@@ -79,7 +87,7 @@ func (l *list) renderRowWith(position, n int, widths []int) string {
 		box, boxStyle := uncheckedBox, mutedStyle
 		if l.marked[index] {
 			box, boxStyle = checkedBox, th.Action
-			if lit {
+			if strong {
 				boxStyle = th.SelectedAction
 			}
 		}
@@ -104,17 +112,15 @@ func (l *list) renderRowWith(position, n int, widths []int) string {
 		}
 		text := l.cutCell(cell, i, widths[i])
 		if !receded && l.color {
-			if l.paintCell != nil {
-				if painted, ok := l.paintCell(i, text, lit); ok {
-					if padded {
-						painted = pad(painted, widths[i])
-					}
-					writePainted(painted)
-					continue
+			if painted, ok := l.paintedCell(index, i, text, l.baseStyle(item, i, strong, nameStyle, mutedStyle), lit); ok {
+				if padded {
+					painted = pad(painted, widths[i])
 				}
+				writePainted(painted)
+				continue
 			}
 			if style := l.cellStyle(item, i); style != "" {
-				if lit {
+				if strong {
 					style = theme.Join(theme.Bold, style)
 				}
 				if padded {
@@ -139,7 +145,13 @@ func (l *list) renderRowWith(position, n int, widths []int) string {
 		write(columnGap, "")
 		write(item.Action, actionStyle)
 	}
-	return b.String()
+	if !highlight {
+		return b.String()
+	}
+	if left > 0 {
+		b.WriteString(strings.Repeat(" ", left))
+	}
+	return withBackground(b.String(), l.cursorRow)
 }
 
 // cutCell shortens a cell to its column the way the column asks for.
@@ -148,6 +160,51 @@ func (l *list) cutCell(cell string, column, n int) string {
 		return cutMiddle(cell, n)
 	}
 	return cut(cell, n)
+}
+
+// paintedCell asks the caller's cell painter, PaintRowCell or else
+// PaintCell, to paint text, a cell of the row at index cut to its column. It
+// reports false when there is no painter, when it declines, and when what it
+// returns is more than text with colors added.
+func (l *list) paintedCell(index, column int, text string, base theme.Style, lit bool) (string, bool) {
+	var (
+		painted string
+		ok      bool
+	)
+	switch {
+	case l.paintRowCell != nil:
+		row := index
+		if index >= l.given {
+			// The typed row, or a typed answer a list that marks rows took
+			// in: no row of the caller's.
+			row = -1
+		}
+		painted, ok = l.paintRowCell(row, column, text, base, lit)
+	case l.paintCell != nil:
+		painted, ok = l.paintCell(column, text, lit)
+	default:
+		return "", false
+	}
+	if !ok || !paintedFrom(painted, text) {
+		return "", false
+	}
+	return painted, true
+}
+
+// baseStyle is the style the cell of item in column is drawn in as a whole
+// when nothing paints inside it: the cell style, bold on a lit row, or the
+// style of the name or of a column that qualifies it.
+func (l *list) baseStyle(item Item, column int, lit bool, nameStyle, mutedStyle theme.Style) theme.Style {
+	if style := l.cellStyle(item, column); style != "" {
+		if lit {
+			return theme.Join(theme.Bold, style)
+		}
+		return style
+	}
+	if column == 0 {
+		return nameStyle
+	}
+	return mutedStyle
 }
 
 // cellStyle is the row's own style for a column when it sets one, else the
@@ -234,10 +291,11 @@ func lastFilledCell(cells []string) int {
 }
 
 // gapBefore is the space between column i-1 and column i: a single space
-// after a one-cell marker column, the normal gap everywhere else. A marker
-// belongs to the row it marks.
+// after a one-cell marker column, or after a column empty on every row, the
+// normal gap everywhere else. A marker belongs to the row it marks, and a
+// column with nothing in it must not widen the gap to the next one.
 func gapBefore(widths []int, column int) string {
-	if column > 0 && column-1 < len(widths) && widths[column-1] == 1 {
+	if column > 0 && column-1 < len(widths) && widths[column-1] <= 1 {
 		return " "
 	}
 	return columnGap

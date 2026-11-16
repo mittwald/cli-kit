@@ -85,11 +85,13 @@ type list struct {
 	marked map[int]bool
 	boxes  bool
 
-	cellStyles  []theme.Style
-	paintCell   func(int, string, bool) (string, bool)
-	detailStyle theme.Style
-	priorities  []int
-	truncation  []Truncation
+	cellStyles   []theme.Style
+	paintCell    func(int, string, bool) (string, bool)
+	paintRowCell func(int, int, string, theme.Style, bool) (string, bool)
+	detailStyle  theme.Style
+	paintDetail  func(string, theme.Style) string
+	priorities   []int
+	truncation   []Truncation
 
 	rangeMode bool
 	unit      string
@@ -97,7 +99,14 @@ type list struct {
 	anchor int
 
 	keyLine            string
+	keys               KeyLabels
 	nested             bool
+	cursorRow          theme.Style
+	cursorMark         theme.Style
+	compact            bool
+	activeView         theme.Style
+	hintStyle          theme.Style
+	emptyStyle         theme.Style
 	dismissOnBackspace bool
 }
 
@@ -115,15 +124,27 @@ func newList(opts Options, height int, color bool) *list {
 		marked:             map[int]bool{},
 		cellStyles:         opts.CellStyles,
 		paintCell:          opts.PaintCell,
+		paintRowCell:       opts.PaintRowCell,
 		detailStyle:        opts.DetailStyle,
+		paintDetail:        opts.PaintDetail,
 		priorities:         opts.ColumnPriority,
 		truncation:         opts.ColumnTruncation,
 		rangeMode:          opts.Range,
 		unit:               plainLine(opts.RangeUnit),
 		anchor:             -1,
 		keyLine:            plainLine(opts.Hint),
+		keys:               plainKeys(opts.Keys),
+		cursorRow:          opts.CursorRow,
+		cursorMark:         opts.CursorMark,
+		compact:            opts.Compact,
+		activeView:         opts.ActiveView,
+		hintStyle:          opts.HintStyle,
+		emptyStyle:         opts.EmptyStyle,
 		nested:             opts.Nested,
 		dismissOnBackspace: opts.DismissOnBackspace,
+	}
+	if opts.TitleStyle != "" {
+		l.theme.Title = opts.TitleStyle
 	}
 	l.scoped = opts.scoped()
 	if l.scoped || len(opts.Views) > 1 {
@@ -255,9 +276,9 @@ type frame struct {
 // after the other, until minVisible rows fit: first the note, then the blank
 // lines, the key line and the position line. The title goes last, when
 // there is not even room for it and one row. An unknown height (0 or less)
-// keeps everything.
-func fitFrame(height, want int, note, counted bool) frame {
-	f := frame{title: true, note: note, gapAbove: true, gapBelow: true, position: true, hint: true}
+// keeps everything. gaps says whether the block has the blank lines at all.
+func fitFrame(height, want int, note, counted, gaps bool) frame {
+	f := frame{title: true, note: note, gapAbove: gaps, gapBelow: gaps, position: true, hint: true}
 	want = max(want, 1)
 	if height <= 0 {
 		f.rows = want
@@ -303,7 +324,7 @@ func (l *list) resize(maxVisible, height int) {
 	if maxVisible > 0 {
 		want = min(want, max(maxVisible, minVisible))
 	}
-	fitted := fitFrame(height, want, l.note != "", true)
+	fitted := fitFrame(height, want, l.note != "", true, !l.compact)
 	if fitted == l.frame {
 		return
 	}
@@ -788,7 +809,7 @@ func (l *list) render(width int) []string {
 		lines = append(lines, l.renderPosition(width))
 	}
 	if l.frame.hint {
-		lines = append(lines, l.styled(th.Muted, l.hint(width)))
+		lines = append(lines, l.styled(firstStyle(l.hintStyle, th.Muted), l.hint(width)))
 	}
 	return lines
 }
@@ -802,13 +823,13 @@ func (l *list) emptyLine() (string, theme.Style) {
 	}
 	switch {
 	case l.loading():
-		return "  " + firstNonEmpty(view.Loading, "loading…"), l.theme.Muted
+		return "  " + firstNonEmpty(view.Loading, "loading…"), firstStyle(l.emptyStyle, l.theme.Muted)
 	case len(l.views) > 0 && l.failures[l.view] != "":
 		return "  " + l.failures[l.view], l.theme.Warning
 	case len(l.filter) > 0:
-		return "  no match", l.theme.Muted
+		return "  no match", firstStyle(l.emptyStyle, l.theme.Muted)
 	}
-	return "  " + firstNonEmpty(view.Empty, "nothing here"), l.theme.Muted
+	return "  " + firstNonEmpty(view.Empty, "nothing here"), firstStyle(l.emptyStyle, l.theme.Muted)
 }
 
 // hint names the keys of the state the list is in, in as much detail as the
@@ -826,15 +847,17 @@ func (l *list) hint(width int) string {
 	if l.rangeMode {
 		enter = "Enter opens the range"
 	}
-	esc := "Esc cancel"
+	esc := firstNonEmpty(l.keys.Cancel, "Esc cancel")
 	if l.nested {
-		esc = "Esc back"
+		esc = firstNonEmpty(l.keys.Back, "Esc back")
 	}
+	view := firstNonEmpty(l.keys.View, "Tab view")
+	viewShort := firstNonEmpty(l.keys.ViewShort, view)
 	long := []string{"↑/↓ move", "PgUp/PgDn page"}
 	short := []string{"↑/↓ move"}
-	if l.switchable() {
-		long = append(long, "Tab view")
-		short = append(short, "Tab view")
+	if l.switchable() && !l.keys.ViewLast {
+		long = append(long, view)
+		short = append(short, viewShort)
 	}
 	if l.multi {
 		long = append(long, "Space mark")
@@ -842,6 +865,10 @@ func (l *list) hint(width int) string {
 	}
 	long = append(long, "type to filter", "Ctrl-U clear", enter, esc)
 	short = append(short, "type to filter", enter, esc)
+	if l.switchable() && l.keys.ViewLast {
+		long = append(long, view)
+		short = append(short, viewShort)
+	}
 	return fitHint(strings.Join(long, separator), strings.Join(short, separator), width)
 }
 
@@ -871,16 +898,27 @@ func (l *list) detailParts(item Item) []styledText {
 		if item.Detail == "" {
 			return nil
 		}
-		return []styledText{{" ", ""}, {item.Detail, l.detailStyleOrDefault()}}
+		return []styledText{{" ", ""}, l.paintedPart(item.Detail, l.detailStyleOrDefault(), l.paintDetail)}
 	}
 	var parts []styledText
 	for _, field := range item.Details {
 		if field.Text == "" {
 			continue
 		}
-		parts = append(parts, styledText{separator, l.theme.Muted}, styledText{field.Text, field.Style})
+		parts = append(parts, styledText{separator, l.theme.Muted}, l.paintedPart(field.Text, field.Style, field.Paint))
 	}
 	return parts
+}
+
+// paintedPart is text in base, or as paint paints it where color is on and
+// paint only adds colors to it.
+func (l *list) paintedPart(text string, base theme.Style, paint func(string, theme.Style) string) styledText {
+	if l.color && paint != nil && text != "" {
+		if painted := paint(text, base); paintedFrom(painted, text) {
+			return styledText{painted, ""}
+		}
+	}
+	return styledText{text, base}
 }
 
 // spanParts summarizes an open range after the title: how many rows it
@@ -905,8 +943,8 @@ func (l *list) spanParts() []styledText {
 	}
 	// Oldest first, the way a range is written: "from..to".
 	style := l.detailStyleOrDefault()
-	return append(parts, styledText{separator, l.theme.Muted}, styledText{from, style},
-		styledText{"..", l.theme.Muted}, styledText{to, style})
+	return append(parts, styledText{separator, l.theme.Muted}, l.paintedPart(from, style, l.paintDetail),
+		styledText{"..", l.theme.Muted}, l.paintedPart(to, style, l.paintDetail))
 }
 
 // position is the position line as plain text.
@@ -920,7 +958,7 @@ func (l *list) position() string {
 
 // positionPart is a stretch of the position line. Active parts are what the
 // user set, the view showing and the filter typed, and are not muted; style
-// overrides the muted style of the others.
+// overrides the muted style, or the terminal's color of an active part.
 type positionPart struct {
 	text   string
 	active bool
@@ -944,10 +982,14 @@ func (l *list) positionParts() []positionPart {
 		for i := range l.views {
 			label := l.viewLabel(i)
 			if i == l.view && inForce {
-				parts = append(parts, positionPart{text: separator}, positionPart{text: "[" + label + "]", active: true})
+				parts = append(parts, positionPart{text: separator}, positionPart{text: "[" + label + "]", active: true, style: l.activeView})
 				continue
 			}
-			parts = append(parts, positionPart{text: separator + label})
+			if l.hintStyle == "" {
+				parts = append(parts, positionPart{text: separator + label})
+				continue
+			}
+			parts = append(parts, positionPart{text: separator}, positionPart{text: label, style: l.hintStyle})
 		}
 	}
 	if l.loading() {
@@ -987,12 +1029,20 @@ func (l *list) renderPosition(n int) string {
 		left -= width(text)
 		style := l.theme.Muted
 		switch {
-		case part.active:
-			style = ""
 		case part.style != "":
 			style = part.style
+		case part.active:
+			style = ""
 		}
 		b.WriteString(l.styled(style, text))
 	}
 	return b.String()
+}
+
+// firstStyle returns style, or fallback when style is empty.
+func firstStyle(style, fallback theme.Style) theme.Style {
+	if style != "" {
+		return style
+	}
+	return fallback
 }

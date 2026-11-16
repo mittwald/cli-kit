@@ -43,5 +43,8 @@
 // [Redact] removes known secrets from text that is about to be logged, as
 // they are and in their URL-escaped and JSON-escaped forms; it does not
 // find a secret inside a larger encoded value, such as the Base64 string
-// of HTTP Basic authentication.
+// of HTTP Basic authentication. [RedactPatterns] removes the credentials it
+// recognizes by their shape, for text from elsewhere whose secrets are not
+// known: labeled assignments such as password=…, Bearer tokens, and tokens
+// whose prefix names their issuer.
 package secret

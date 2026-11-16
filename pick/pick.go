@@ -15,7 +15,8 @@ import (
 // as plain single-line text: escape sequences and control characters in it
 // are dropped, and a line break or a tab becomes a space. Rows made from
 // what a server or a repository holds can therefore be handed in as they
-// are. Colors come from CellStyles and Options.PaintCell, not from the text.
+// are. Colors come from CellStyles, Options.PaintCell, Options.PaintRowCell,
+// Options.PaintDetail and Field.Paint, not from the text.
 type Item struct {
 	// Cells are the row's columns. The first names the row and carries the
 	// weight; text in parentheses inside it recedes. Later cells qualify the
@@ -63,8 +64,17 @@ type Item struct {
 
 // Field is one part of an item's Details.
 type Field struct {
-	Text  string
+	// Text is the field's value.
+	Text string
+	// Style is the color of the whole value.
 	Style theme.Style
+	// Paint, when set, paints inside the value instead of Style alone, such
+	// as a branch name whose "/" separators recede. It gets the value as it
+	// is drawn, already plain text, and Style, and returns the value with
+	// colors added. It is called only when color is on. What it returns must
+	// be the text it was given with SGR color sequences added and nothing
+	// else; anything else is ignored, and the value is drawn in Style.
+	Paint func(text string, base theme.Style) string
 }
 
 // MatchField is one searchable part of a row. MinTerm is the shortest filter
@@ -244,11 +254,29 @@ type Options struct {
 	// painted text and true, or false to leave the cell to the default
 	// styles. It is called only when color is on and the row is not receded.
 	// What it returns is drawn as it is, so it adds colors to the text it
-	// was given and nothing else.
+	// was given and nothing else: SGR color sequences. Text that differs in
+	// anything else is ignored, and the cell is drawn the default way.
 	PaintCell func(column int, text string, selected bool) (string, bool)
+	// PaintRowCell is PaintCell for painting that depends on the row, and it
+	// is used instead of PaintCell when set. It also gets the index of the
+	// row, the index Select would return for it, or -1 for a row typed into
+	// the filter (see Typed), and base, the style the list would draw the
+	// whole cell in: the row's or the column's CellStyles, made bold on the
+	// row under the cursor, or the default style of the column. So a column
+	// whose rows each have a color of their own, such as an author's from
+	// theme.Hashed, can still have parts of its cells painted, such as the
+	// type of a conventional commit message. The same rules as for PaintCell
+	// apply to what it returns.
+	PaintRowCell func(row, column int, text string, base theme.Style, selected bool) (string, bool)
 	// DetailStyle is the style of Item.Detail in the title line; the theme's
 	// info style when empty.
 	DetailStyle theme.Style
+	// PaintDetail, when set, paints Item.Detail in the title line, and the
+	// two ends of an open range, instead of DetailStyle alone. It gets the
+	// detail as it is drawn, already plain text, and the detail style, and
+	// returns the detail with colors added. It is called only when color is
+	// on, and the rules of Field.Paint apply to what it returns.
+	PaintDetail func(text string, base theme.Style) string
 	// ColumnPriority ranks the columns, indexed like Item.Cells, by how long
 	// they keep their width when a row does not fit: the lowest-ranked column
 	// is shortened first. Unranked columns are PriorityNormal.
@@ -270,9 +298,62 @@ type Options struct {
 	// one.
 	RangeUnit string
 
+	// CursorRow, when set, highlights the row under the cursor, and every
+	// row of an open range, with a background across the whole width of
+	// the list, such as theme.BgRGB(69, 56, 86). Its cells then keep the
+	// colors they have on any other row, instead of the theme's Selected
+	// colors and bold cell styles. Use a background color: the style is
+	// started again after every color sequence inside the row, so that a
+	// cell's colors do not end it, and a background of a cell's own does
+	// not show on a highlighted row. Empty keeps the default highlight.
+	CursorRow theme.Style
+	// CursorMark is the style of the marker in front of the row under the
+	// cursor, such as theme.Join(theme.Bold, theme.Fg256(255)). Empty draws
+	// it in the style of the row's name.
+	CursorMark theme.Style
+	// Compact leaves out the blank lines above and below the rows, so the
+	// title, the rows, the position line and the key line follow each other.
+	Compact bool
+	// Keys changes the wording of the default key line under the list. It
+	// has no effect where Hint replaces that line.
+	Keys KeyLabels
+	// ActiveView is the style of the name of the view in force in the
+	// position line, such as theme.Join(theme.Bold, theme.Fg256(189)).
+	// Empty leaves it in the terminal's own color, against the muted names
+	// of the other views.
+	ActiveView theme.Style
+	// TitleStyle replaces the theme's Title style for the title line.
+	TitleStyle theme.Style
+	// HintStyle replaces the theme's Muted style for the key line and for
+	// the names of the views not in force in the position line.
+	HintStyle theme.Style
+	// EmptyStyle replaces the theme's Muted style for the line that stands
+	// in for the rows when none show: loading, no match, nothing here. A
+	// view that failed to load keeps the Warning style.
+	EmptyStyle theme.Style
+
 	// multi is set by SelectManyOrType: Space marks rows rather than going
 	// into the filter.
 	multi bool
+}
+
+// KeyLabels words parts of the default key line of a list. An empty field
+// keeps the default wording. Labels are shown as plain text, as the rest of
+// Options is.
+type KeyLabels struct {
+	// Cancel is how Esc is described: "Esc cancel" by default.
+	Cancel string
+	// Back is how Esc is described on a Nested list: "Esc back" by default.
+	Back string
+	// View is how the keys that switch views are described, on a list with
+	// views to switch between: "Tab view" by default.
+	View string
+	// ViewShort replaces View where the terminal is too narrow for the
+	// whole key line; View when empty.
+	ViewShort string
+	// ViewLast moves the view switch to the end of the key line, after Esc,
+	// instead of after the movement keys.
+	ViewLast bool
 }
 
 // scoped reports whether the views hold their own rows.

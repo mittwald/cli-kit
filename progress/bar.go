@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -142,7 +141,7 @@ func New(w io.Writer, options Options) *Bar {
 		terminalWidth: func() int { return term.Columns(w, 0) },
 		gradient:      append([]Color(nil), palette.Gradient...),
 		trackColors:   [2]Color{palette.Track, palette.TrackText},
-		truecolor:     truecolor(os.Getenv("COLORTERM")),
+		truecolor:     term.TrueColor(),
 		contrast:      options.TextContrast,
 		stall:         options.StallDelay,
 		format:        options.Countdown,

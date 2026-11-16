@@ -20,4 +20,7 @@
 // Escape sequences belong in text output only. Markdown, CSV and TSV are
 // pasted or parsed verbatim, and JSON and YAML are read by programs, so
 // [Format.Colored] reports false for all of them whatever --color says.
+//
+// [Age] writes how long ago something happened in the few cells a column of
+// a listing has for it: "now", "5m", "3h", "2d", "5mo", "2y".
 package format

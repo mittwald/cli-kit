@@ -561,12 +561,19 @@ func TestRedactEscapedForms(t *testing.T) {
 		{"URL path", "GET /keys/" + url.PathEscape(tricky) + "/info", "GET /keys/[REDACTED]/info"},
 		{"JSON", string(body), `{"password":"[REDACTED]"}`},
 		{"JSON without HTML escapes", strings.TrimSpace(plain.String()), `{"password":"[REDACTED]"}`},
+		{"lower-case URL escapes", "?password=" + strings.ToLower(url.QueryEscape(tricky)) + "&x=1", "?password=[REDACTED]&x=1"},
 	} {
 		got := Redact(tc.text, tricky)
 		if got != tc.want {
 			t.Errorf("%s: Redact(%q) = %q, want %q", tc.name, tc.text, got, tc.want)
 		}
 	}
+	// A secret that is not UTF-8 is matched byte for byte, its URL escapes
+	// in either case.
+	if got := Redact("pw=%\xff and pw=%25%FF and %25%ff", "%\xff"); got != "pw=[REDACTED] and pw=[REDACTED] and [REDACTED]" {
+		t.Errorf("Redact of a non-UTF-8 secret = %q", got)
+	}
+
 	// A quote at the end of a secret stays part of its JSON form.
 	if got := Redact(`{"password":"say \"hi\""}`, `say "hi"`); got != `{"password":"[REDACTED]"}` {
 		t.Errorf("Redact of a quoted secret in JSON = %q", got)
