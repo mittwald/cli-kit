@@ -1,8 +1,9 @@
 // Package cobrax collects the cobra and pflag wiring command-line tools keep
 // rewriting: a --color[=WHEN] flag, enumerated flags that complete their
 // values, file completion switched off where no file is expected, a
-// hardened completion command, completion candidates cached on disk, the
-// "--flag false" spelling of boolean flags, and version output.
+// hardened completion command that can install its scripts for the current
+// user, completion candidates cached on disk, the "--flag false" spelling of
+// boolean flags, and version output.
 //
 // A typical root command:
 //
@@ -13,6 +14,6 @@
 //	cobrax.SetVersion(root, buildinfo.Get())
 //	root.AddCommand(listCmd, showCmd)
 //	cobrax.NoFileCompletions(root)
-//	cobrax.HardenCompletion(root)
+//	cobrax.AddCompletionInstall(cobrax.HardenCompletion(root))
 //	root.SetArgs(cobrax.JoinSpacedBoolValues(root, os.Args[1:]))
 package cobrax

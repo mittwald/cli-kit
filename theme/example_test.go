@@ -44,3 +44,21 @@ func ExampleDiffScanner() {
 	//     -version: 8.4.24
 	//     +version: 8.4.25
 }
+
+func ExampleTheme_PaintJSON() {
+	th := theme.Theme{JSONKey: "36", JSONString: "32", JSONNumber: "33", JSONBool: "35", JSONNull: "2"}
+	fmt.Printf("%q\n", th.PaintJSON(`{"id":7,"ok":true,"tag":null}`))
+	// Output:
+	// "{\x1b[36m\"id\"\x1b[0m:\x1b[33m7\x1b[0m,\x1b[36m\"ok\"\x1b[0m:\x1b[35mtrue\x1b[0m,\x1b[36m\"tag\"\x1b[0m:\x1b[2mnull\x1b[0m}"
+}
+
+// Every row by the same author is painted alike, whatever case the name is
+// written in.
+func ExampleHashed() {
+	palette := []theme.Style{"31", "32", "33"}
+	fmt.Println(theme.Hashed("Alice", palette) == theme.Hashed("alice ", palette))
+	fmt.Printf("%q\n", theme.Hashed("", palette))
+	// Output:
+	// true
+	// ""
+}

@@ -784,15 +784,6 @@ func TestUnfinishedBarIsNeverFull(t *testing.T) {
 // 24-bit colors are painted only where COLORTERM announces them; any other
 // terminal gets the nearest of the 256 colors.
 func TestBarPaintsThe256ColorsWithoutTruecolor(t *testing.T) {
-	for value, want := range map[string]bool{
-		"truecolor": true, "24bit": true, "TrueColor": true,
-		"": false, "1": false, "yes": false, "256color": false,
-	} {
-		if got := truecolor(value); got != want {
-			t.Errorf("truecolor(%q) = %v, want %v", value, got, want)
-		}
-	}
-
 	t.Setenv("COLORTERM", "")
 	var buf bytes.Buffer
 	b := New(&buf, Options{Width: 20, Force: true})

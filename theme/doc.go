@@ -12,4 +12,10 @@
 // [DiffScanner] tells its lines apart for code that shows only some of them.
 // Both take the diff as it is and take nothing out of it: a diff that does
 // not come from the program itself goes through term.Plain first.
+// [Theme.PaintJSON] paints encoded JSON with the theme's JSON roles in the
+// same way.
+//
+// [Hashed] gives a name a style of its own that stays the same across rows
+// and runs, such as a color per author, picked from [NamePalette] or a
+// palette of the caller's.
 package theme

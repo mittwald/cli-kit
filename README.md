@@ -27,17 +27,18 @@ compiled into your binary.
 
 | Package | What it does |
 |---|---|
-| [`term`](https://pkg.go.dev/github.com/mittwald/cli-kit/term) | Terminal detection and size, the `--color` mode with `NO_COLOR` and `TERM=dumb`, visible text width, truncation, padding, word wrapping, OSC 8 hyperlinks, and untrusted output made safe to show |
-| [`theme`](https://pkg.go.dev/github.com/mittwald/cli-kit/theme) | SGR styles, the color roles the other packages paint with, and unified diffs painted the way git paints them |
-| [`pick`](https://pkg.go.dev/github.com/mittwald/cli-kit/pick) | Interactive list selection with filtering, views and ranges, switches, and line-edited text and secret input |
+| [`term`](https://pkg.go.dev/github.com/mittwald/cli-kit/term) | Terminal detection and size, the `--color` mode with `NO_COLOR` and `TERM=dumb`, visible text width, truncation, padding, word wrapping, OSC 8 hyperlinks, 24-bit color detection, and untrusted output made safe to show |
+| [`theme`](https://pkg.go.dev/github.com/mittwald/cli-kit/theme) | SGR styles, the color roles the other packages paint with, unified diffs painted the way git paints them, painted JSON, and a stable color per name |
+| [`pick`](https://pkg.go.dev/github.com/mittwald/cli-kit/pick) | Interactive list selection with filtering, views and ranges, per-row and in-cell painting, an adjustable look, switches, and line-edited text and secret input |
 | [`live`](https://pkg.go.dev/github.com/mittwald/cli-kit/live) | Blocks of lines redrawn in place, detail/result output separation, and cursor and terminal restore on exit, panic and signals |
 | [`progress`](https://pkg.go.dev/github.com/mittwald/cli-kit/progress) | A gradient progress bar with a stall countdown that steps aside for log lines |
 | [`table`](https://pkg.go.dev/github.com/mittwald/cli-kit/table) | Tables in plain, framed and Markdown styles, and CSV/TSV records, with spreadsheet formulas escaped on request |
-| [`format`](https://pkg.go.dev/github.com/mittwald/cli-kit/format) | An `--output` flag value and JSON/YAML writers driven by the same struct tags |
+| [`format`](https://pkg.go.dev/github.com/mittwald/cli-kit/format) | An `--output` flag value, JSON/YAML writers driven by the same struct tags, and compact ages ("3h", "5mo") |
 | [`ics`](https://pkg.go.dev/github.com/mittwald/cli-kit/ics) | An RFC 5545 iCalendar writer |
-| [`secret`](https://pkg.go.dev/github.com/mittwald/cli-kit/secret) | Credentials from flags, files, environment, stdin, the OS keyring or a hidden prompt |
+| [`secret`](https://pkg.go.dev/github.com/mittwald/cli-kit/secret) | Credentials from flags, files, environment, stdin, the OS keyring or a hidden prompt, and redaction of known and recognizable secrets |
 | [`selfupdate`](https://pkg.go.dev/github.com/mittwald/cli-kit/selfupdate) | Self-updates from GitHub Releases or a GitLab package registry, checked against the release's checksums file |
-| [`cobrax`](https://pkg.go.dev/github.com/mittwald/cli-kit/cobrax) | Cobra helpers: `--color`, enum flags, hardened and cached shell completion, version command |
+| [`cobrax`](https://pkg.go.dev/github.com/mittwald/cli-kit/cobrax) | Cobra helpers: `--color`, enum flags, hardened and cached shell completion with an optional `--install`, version command |
+| [`clipboard`](https://pkg.go.dev/github.com/mittwald/cli-kit/clipboard) | Text copied to the system clipboard through the platform's helper commands, without cgo |
 | [`buildinfo`](https://pkg.go.dev/github.com/mittwald/cli-kit/buildinfo) | Version, commit and date from `-ldflags` or the Go build information |
 
 ## Examples
@@ -57,6 +58,8 @@ th := theme.Active().For(os.Stdout) // theme.Plain where stdout takes no color
 fmt.Print(th.PaintDiff(term.Plain(diff))) // a diff from elsewhere: made plain first
 fmt.Println(term.Sanitize(jobLog))        // its colors kept, every other escape gone
 fmt.Println(term.PlainLine(name))         // one line, no escape sequence, no color
+fmt.Println(th.PaintJSON(string(data)))   // JSON from encoding/json: keys, strings, numbers, literals
+author := theme.Hashed(name, nil)         // the same color for the same name, on every run
 ```
 
 ### Tables and structured output
@@ -169,7 +172,7 @@ for the platform, and a credential is only sent to an `https` API address.
 cobrax.SetVersion(root, buildinfo.Get())
 root.AddCommand(cobrax.NewVersionCommand(buildinfo.Get()))
 cobrax.NoFileCompletions(root)
-cobrax.HardenCompletion(root)
+cobrax.AddCompletionInstall(cobrax.HardenCompletion(root)) // "completion bash --install"
 root.SetArgs(cobrax.JoinSpacedBoolValues(root, os.Args[1:]))
 ```
 

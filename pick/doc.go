@@ -26,9 +26,22 @@
 // becomes a space, and the characters that reorder text on screen go. Text
 // from elsewhere, such as the title of a pull request or the name of a
 // branch, can be handed in as it is. Colors are set with styles
-// (Options.CellStyles, Options.PaintCell, the theme), not inside the text.
+// (Options.CellStyles, Options.PaintCell and the other painters, the
+// theme), not inside the text: a painter is given the text already made
+// plain, and may add colors to it and nothing else.
 // The same holds for what is typed: a control character pasted into a
 // filter or a text field is left out.
+//
+// # Look
+//
+// A list looks the same in every tool unless the tool asks otherwise:
+// Options.CursorRow and Options.CursorMark highlight the row under the
+// cursor with a background across the whole width instead of the theme's
+// selected colors, Options.Compact leaves out the blank lines around the
+// rows, Options.Keys rewords the key line, Options.ActiveView paints the
+// view in force in the position line, and Options.TitleStyle,
+// Options.HintStyle and Options.EmptyStyle replace the theme's styles for the
+// title, the key line and the line that stands in for missing rows.
 //
 // # The terminal
 //

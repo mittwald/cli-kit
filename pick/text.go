@@ -2,6 +2,7 @@ package pick
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -200,6 +201,115 @@ func choiceParts(text string, style theme.Style, th theme.Theme) []styledText {
 		last = match[1]
 	}
 	return append(parts, styledText{text[last:], style})
+}
+
+// paintedFrom reports whether painted is text with nothing but SGR
+// sequences (ESC [ parameters m) added to it: what a caller's painter may
+// return. Anything else it could add, a cursor movement, a hyperlink, a
+// character, would change what is drawn and the width the layout counted.
+func paintedFrom(painted, text string) bool {
+	for i := 0; i < len(painted); {
+		if painted[i] != '\x1b' {
+			if text == "" || painted[i] != text[0] {
+				return false
+			}
+			text = text[1:]
+			i++
+			continue
+		}
+		j := i + 1
+		if j == len(painted) || painted[j] != '[' {
+			return false
+		}
+		for j++; j < len(painted) && (isDigit(painted[j]) || painted[j] == ';' || painted[j] == ':'); j++ {
+		}
+		if j == len(painted) || painted[j] != 'm' {
+			return false
+		}
+		i = j + 1
+	}
+	return text == ""
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+// plainKeys is labels with every label made plain text.
+func plainKeys(labels KeyLabels) KeyLabels {
+	labels.Cancel = plainLine(labels.Cancel)
+	labels.Back = plainLine(labels.Back)
+	labels.View = plainLine(labels.View)
+	labels.ViewShort = plainLine(labels.ViewShort)
+	return labels
+}
+
+// withBackground draws row, a painted line, on the background bg: bg is
+// switched on at the start and again after every SGR sequence in row that
+// resets the attributes or sets a background, so that neither a reset nor
+// a background of a cell's own shows through, and the line ends with a
+// reset.
+func withBackground(row string, bg theme.Style) string {
+	var b strings.Builder
+	b.Grow(len(row) + 32)
+	b.WriteString(bg.Sequence())
+	for i := 0; i < len(row); {
+		if row[i] != '\x1b' || i+1 == len(row) || row[i+1] != '[' {
+			b.WriteByte(row[i])
+			i++
+			continue
+		}
+		j := i + 2
+		for j < len(row) && (isDigit(row[j]) || row[j] == ';' || row[j] == ':') {
+			j++
+		}
+		if j == len(row) || row[j] != 'm' {
+			b.WriteByte(row[i])
+			i++
+			continue
+		}
+		b.WriteString(row[i : j+1])
+		if touchesBackground(row[i+2 : j]) {
+			b.WriteString(bg.Sequence())
+		}
+		i = j + 1
+	}
+	b.WriteString(theme.Reset)
+	return b.String()
+}
+
+// touchesBackground reports whether an SGR sequence with params, the text
+// between ESC [ and m, changes the background: it resets every attribute
+// (no parameter, or a 0), or sets or resets the background (40 to 49, 100
+// to 107). The arguments of an extended color, 38;5;n or 48;2;r;g;b, are
+// skipped, so that a color index is not taken for a parameter.
+func touchesBackground(params string) bool {
+	if params == "" {
+		return true
+	}
+	tokens := strings.Split(params, ";")
+	for i := 0; i < len(tokens); i++ {
+		token := tokens[i]
+		code, _, extended := strings.Cut(token, ":")
+		n, err := strconv.Atoi(code)
+		if code == "" {
+			n, err = 0, nil
+		}
+		if err != nil {
+			continue
+		}
+		switch {
+		case n == 0, n >= 40 && n <= 49, n >= 100 && n <= 107:
+			return true
+		case (n == 38 || n == 58) && !extended && i+1 < len(tokens):
+			// 38;5;n takes one argument, 38;2;r;g;b three.
+			switch tokens[i+1] {
+			case "5":
+				i += 2
+			case "2":
+				i += 4
+			}
+		}
+	}
+	return false
 }
 
 // partsText is the parts as plain text, the way they read once drawn.

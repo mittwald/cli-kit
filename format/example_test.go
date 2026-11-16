@@ -3,6 +3,7 @@ package format_test
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/mittwald/cli-kit/format"
 )
@@ -44,4 +45,16 @@ func ExampleSet_Parse() {
 	// Output:
 	// ics <nil>
 	// unknown output format "yaml": want one of text, json, ics
+}
+
+func ExampleAge() {
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	for _, t := range []time.Time{now, now.Add(-90 * time.Minute), now.AddDate(0, 0, -45), {}} {
+		fmt.Printf("%q\n", format.Age(t, now))
+	}
+	// Output:
+	// "now"
+	// "1h"
+	// "1mo"
+	// ""
 }

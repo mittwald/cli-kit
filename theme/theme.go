@@ -153,6 +153,16 @@ type Theme struct {
 	DiffHeader Style
 	// DiffHunk is the @@ -1,4 +1,5 @@ that starts a hunk of a diff.
 	DiffHunk Style
+	// JSONKey is the name of a member of a JSON object, quotes included.
+	JSONKey Style
+	// JSONString is a JSON string value, quotes included.
+	JSONString Style
+	// JSONNumber is a JSON number.
+	JSONNumber Style
+	// JSONBool is a JSON true or false.
+	JSONBool Style
+	// JSONNull is a JSON null.
+	JSONNull Style
 }
 
 // Default is the theme the packages use unless [Use] installs another. It
@@ -160,7 +170,9 @@ type Theme struct {
 // and to mid-luminance tones that read on dark and light backgrounds. A
 // diff reads the way git paints one: file headers bold, hunk headers in
 // light blue, removed lines red and added lines green, in the tones of
-// Error and Success.
+// Error and Success. JSON reads in cool tones: keys turquoise, strings and
+// numbers in two greens, true and false in a pale green, and null receding
+// in grey.
 var Default = Theme{
 	Title:             Bold,
 	Subject:           Bold,
@@ -185,6 +197,11 @@ var Default = Theme{
 	Removed:           Fg256(203),
 	DiffHeader:        Bold,
 	DiffHunk:          Fg256(117),
+	JSONKey:           Fg256(116),
+	JSONString:        Fg256(120),
+	JSONNumber:        Fg256(118),
+	JSONBool:          Fg256(156),
+	JSONNull:          Fg256(242),
 }
 
 // Plain paints nothing. Installing it keeps escape sequences out of output

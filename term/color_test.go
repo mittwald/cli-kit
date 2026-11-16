@@ -86,3 +86,18 @@ func TestSetColorModeRejectsUnknownModes(t *testing.T) {
 		t.Errorf("unknown mode recorded as %v, want auto", got)
 	}
 }
+
+// 24-bit colors are announced by COLORTERM alone, in any case.
+func TestTrueColor(t *testing.T) {
+	for value, want := range map[string]bool{
+		"truecolor": true, "24bit": true, "TrueColor": true, "24BIT": true,
+		"": false, "1": false, "yes": false, "256color": false, " truecolor": false,
+	} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("COLORTERM", value)
+			if got := TrueColor(); got != want {
+				t.Errorf("TrueColor() with COLORTERM=%q = %v, want %v", value, got, want)
+			}
+		})
+	}
+}
