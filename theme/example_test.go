@@ -2,6 +2,7 @@ package theme_test
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/mittwald/cli-kit/theme"
@@ -61,4 +62,24 @@ func ExampleHashed() {
 	// Output:
 	// true
 	// ""
+}
+
+// A style from the environment, such as EXAMPLE_COLOR_HEADER=160:bold.
+func ExampleParseStyle() {
+	style, ok := theme.ParseStyle("160:bold")
+	fmt.Printf("%q %v\n", style.Paint("header"), ok)
+
+	_, ok = theme.ParseStyle("bright-ish")
+	fmt.Println(ok)
+	// Output:
+	// "\x1b[38;5;160;1mheader\x1b[0m" true
+	// false
+}
+
+// A word stands out in a muted line, and the line stays muted after it.
+func ExampleStyle_PaintMatches() {
+	line := theme.Dim.Paint("3 checks failed, 2 passed")
+	fmt.Printf("%q\n", theme.Style("31").PaintMatches(line, regexp.MustCompile(`failed`)))
+	// Output:
+	// "\x1b[2m3 checks \x1b[0m\x1b[31mfailed\x1b[0m\x1b[2m, 2 passed\x1b[0m"
 }

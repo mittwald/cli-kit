@@ -8,10 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
-	"strings"
 	"time"
-	"unicode"
 
 	"github.com/spf13/cobra"
 )
@@ -159,11 +156,9 @@ func write(path string, value any) {
 // written to cobra's completion debug log.
 //
 // What load returns usually comes from elsewhere, such as names a remote
-// service lists, and the shell shows it as it is. A candidate that holds a
-// control character, an escape sequence among them, is therefore left out:
-// it could not be completed to the name it stands for anyway. The one tab
-// that separates a value from its description, as cobra.CompletionWithDesc
-// writes it, is kept.
+// service lists, and the shell shows it as it is. The candidates therefore
+// go through [SafeCompletions], which leaves out every candidate that holds
+// a control character, an escape sequence among them.
 func CachedCompletion(app, scope string, ttl, timeout time.Duration, load func(context.Context) ([]string, error)) cobra.CompletionFunc {
 	cache := CompletionCache[[]string]{
 		App:     app,
@@ -177,14 +172,6 @@ func CachedCompletion(app, scope string, ttl, timeout time.Duration, load func(c
 			cobra.CompDebugln("cached completion: "+err.Error(), false)
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
-		return slices.DeleteFunc(slices.Clone(values), unsafeCompletion), cobra.ShellCompDirectiveNoFileComp
+		return SafeCompletions(values), cobra.ShellCompDirectiveNoFileComp
 	}
-}
-
-// unsafeCompletion reports whether a candidate holds a control character
-// other than the tab between its value and its description.
-func unsafeCompletion(candidate string) bool {
-	value, description, _ := strings.Cut(candidate, "\t")
-	return value == "" || strings.ContainsFunc(value, unicode.IsControl) ||
-		strings.ContainsFunc(description, unicode.IsControl)
 }

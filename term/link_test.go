@@ -152,3 +152,32 @@ func TestLinkWriterKeepsHyperlinks(t *testing.T) {
 		t.Errorf("linkWriter wrote %q, want %q", buf.String(), in)
 	}
 }
+
+// Links follow the mode as colors do: only always reaches a buffer, and
+// NO_COLOR and TERM=dumb do not overrule an explicit always.
+func TestShouldLink(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		mode ColorMode
+		want bool
+	}{
+		{"auto into a buffer", nil, ColorAuto, false},
+		{"always", nil, ColorAlways, true},
+		{"never", nil, ColorNever, false},
+		{"always despite NO_COLOR", map[string]string{"NO_COLOR": "1"}, ColorAlways, true},
+		{"always despite TERM=dumb", map[string]string{"TERM": "dumb"}, ColorAlways, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TERM", "xterm-256color")
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			var buf bytes.Buffer
+			if got := ShouldLink(tt.mode, &buf); got != tt.want {
+				t.Errorf("ShouldLink(%v) = %v, want %v", tt.mode, got, tt.want)
+			}
+		})
+	}
+}

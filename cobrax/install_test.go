@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/mittwald/cli-kit/fsx"
 )
 
 // isolateHome points the home and XDG directories at a fresh directory.
@@ -143,4 +145,93 @@ func TestAddCompletionInstallFlags(t *testing.T) {
 	AddCompletionInstall(nil)
 	bare := &cobra.Command{Use: "example", RunE: func(*cobra.Command, []string) error { return nil }}
 	AddCompletionInstall(HardenCompletion(bare))
+}
+
+// A symbolic link where the script belongs is refused, and the file it
+// points to stays as it was.
+func TestAddCompletionInstallRefusesSymlink(t *testing.T) {
+	isolateHome(t)
+	path, err := CompletionInstallPath("example", "fish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "dotfile.fish")
+	if err := os.WriteFile(target, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("cannot create a symbolic link: %v", err)
+	}
+	root := newRoot()
+	AddCompletionInstall(HardenCompletion(root))
+	_, err = execute(t, root, "completion", "fish", "--install")
+	var scriptErr *ScriptError
+	if !errors.As(err, &scriptErr) || !errors.Is(err, fsx.ErrSymlink) {
+		t.Fatalf("err = %v, want a *ScriptError wrapping fsx.ErrSymlink", err)
+	}
+	if data, _ := os.ReadFile(target); string(data) != "mine" {
+		t.Errorf("the link's target = %q, want it unchanged", data)
+	}
+}
+
+func TestWriteCompletionScript(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
+		t.Run(shell, func(t *testing.T) {
+			root := newRoot()
+			HardenCompletion(root)
+			printed, err := execute(t, root, "completion", shell)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(t.TempDir(), "config", "example")
+			path := filepath.Join(dir, shell+"-completion.sh")
+			if err := WriteCompletionScript(newRoot(), shell, path); err != nil {
+				t.Fatal(err)
+			}
+			written, err := os.ReadFile(path)
+			if err != nil || string(written) != printed {
+				t.Fatalf("written script differs from the printed one (err %v)", err)
+			}
+			if runtime.GOOS != "windows" {
+				if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+					t.Errorf("file mode = %v, %v; want 0600", info.Mode().Perm(), err)
+				}
+				if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
+					t.Errorf("directory mode = %v, %v; want 0700", info.Mode().Perm(), err)
+				}
+			}
+
+			// Without descriptions where the root says so.
+			plain := newRoot()
+			plain.CompletionOptions.DisableDescriptions = true
+			if err := WriteCompletionScript(plain, shell, path); err != nil {
+				t.Fatal(err)
+			}
+			if again, _ := os.ReadFile(path); string(again) == printed {
+				t.Error("DisableDescriptions did not change the script")
+			}
+			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 {
+				t.Errorf("directory holds %v, %v; want the script alone", entries, err)
+			}
+		})
+	}
+}
+
+func TestWriteCompletionScriptErrors(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteCompletionScript(newRoot(), "tcsh", filepath.Join(dir, "x")); err == nil || !strings.Contains(err.Error(), "tcsh") {
+		t.Errorf("unknown shell: %v", err)
+	}
+	blocker := filepath.Join(dir, "blocked")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := WriteCompletionScript(newRoot(), "zsh", filepath.Join(blocker, "_example"))
+	var scriptErr *ScriptError
+	if !errors.As(err, &scriptErr) || scriptErr.Shell != "zsh" {
+		t.Errorf("err = %v, want a *ScriptError", err)
+	}
 }

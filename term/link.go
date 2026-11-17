@@ -24,6 +24,27 @@ func Hyperlink(url, text string) string {
 	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
 }
 
+// ShouldLink reports whether text written to w carries OSC 8 hyperlinks
+// under mode m, usually the value of a --links flag (see cobrax.AddModeFlag):
+// always under [ColorAlways], never under [ColorNever], and under
+// [ColorAuto] only when w is a terminal, where a link can be clicked, and
+// [ColorAllowed] holds. A hyperlink is an escape sequence like a color, so
+// NO_COLOR and TERM=dumb, which ask for output free of them, switch links
+// off as well.
+//
+// On Windows it switches on the console's virtual terminal processing as
+// [ShouldColor] does, and reports false under every mode for a console
+// that would show the sequence as text.
+func ShouldLink(m ColorMode, w io.Writer) bool {
+	switch m {
+	case ColorAlways:
+		return !plainConsole(w)
+	case ColorNever:
+		return false
+	}
+	return ColorAllowed() && IsTerminal(w) && !plainConsole(w)
+}
+
 // urlPattern is what counts as a link in running text: it ends at white
 // space, at a quote or an angle bracket, and at a control character.
 // Trailing punctuation ends a sentence more often than a URL, so [Linkify]

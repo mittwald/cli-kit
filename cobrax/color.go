@@ -17,21 +17,16 @@ import (
 // The zero ColorValue reads values as [AddColorFlag] does; [AddColorFlagWith]
 // and its options change that.
 type ColorValue struct {
-	mode    term.ColorMode
-	bare    *term.ColorMode
-	strict  bool
-	invalid func(value string) error
+	mode   term.ColorMode
+	parser modeParser
 }
 
 // Set parses a --color value with term.ParseColorMode and records it. An
 // empty value and "true", the spellings of a bare --color, mean the mode
 // [BareColor] chose, [term.ColorAlways] unless it chose another.
 func (v *ColorValue) Set(value string) error {
-	mode, err := v.parse(value)
+	mode, err := v.parser.parse(value, "color mode")
 	if err != nil {
-		if v.invalid != nil {
-			return v.invalid(value)
-		}
 		return err
 	}
 	v.mode = mode
@@ -39,24 +34,39 @@ func (v *ColorValue) Set(value string) error {
 	return nil
 }
 
-// parse reads value as Set describes.
-func (v *ColorValue) parse(value string) (term.ColorMode, error) {
-	name := strings.ToLower(strings.TrimSpace(value))
-	if name == "" || name == "true" {
-		return v.bareMode(), nil
-	}
-	if v.strict && !slices.Contains(term.ColorModeNames, name) {
-		return term.ColorAuto, fmt.Errorf("invalid color mode %q: want one of %s", value, strings.Join(term.ColorModeNames, ", "))
-	}
-	return term.ParseColorMode(value)
+// modeParser reads the value of a flag that takes auto, always or never,
+// as the options of [AddColorFlagWith] and [AddModeFlag] set it up.
+type modeParser struct {
+	bare    *term.ColorMode
+	strict  bool
+	invalid func(value string) error
 }
 
-// bareMode is the mode a bare --color means.
-func (v *ColorValue) bareMode() term.ColorMode {
-	if v.bare == nil {
+// parse reads value: a bare flag's spellings mean the bare mode, and
+// anything else is read with term.ParseColorMode, or, when strict, must be
+// auto, always or never. what names the value in the error, unless an
+// invalid function words it.
+func (p *modeParser) parse(value, what string) (term.ColorMode, error) {
+	name := strings.ToLower(strings.TrimSpace(value))
+	if name == "" || name == "true" {
+		return p.bareMode(), nil
+	}
+	mode, err := term.ParseColorMode(value)
+	if err == nil && (!p.strict || slices.Contains(term.ColorModeNames, name)) {
+		return mode, nil
+	}
+	if p.invalid != nil {
+		return term.ColorAuto, p.invalid(value)
+	}
+	return term.ColorAuto, fmt.Errorf("invalid %s %q: want one of %s", what, value, strings.Join(term.ColorModeNames, ", "))
+}
+
+// bareMode is the mode a bare flag means.
+func (p *modeParser) bareMode() term.ColorMode {
+	if p.bare == nil {
 		return term.ColorAlways
 	}
-	return *v.bare
+	return *p.bare
 }
 
 // String returns the current mode's flag spelling.
@@ -107,21 +117,21 @@ func ColorAliases(names ...string) ColorOption {
 // [term.ColorAlways], the way ls reads a bare --color; [term.ColorAuto] is
 // the way grep reads it.
 func BareColor(mode term.ColorMode) ColorOption {
-	return func(f *colorFlag) { f.value.bare = &mode }
+	return func(f *colorFlag) { f.value.parser.bare = &mode }
 }
 
 // StrictColor accepts auto, always and never alone, in any case, besides the
 // spellings of a bare --color. The other spellings term.ParseColorMode
 // reads, such as yes, none or tty, are rejected.
 func StrictColor() ColorOption {
-	return func(f *colorFlag) { f.value.strict = true }
+	return func(f *colorFlag) { f.value.parser.strict = true }
 }
 
 // ColorError words the error for a value the flag rejects: invalid is
 // called with the value as given and returns the error. pflag still puts
 // its own words in front, naming the value and the flag.
 func ColorError(invalid func(value string) error) ColorOption {
-	return func(f *colorFlag) { f.value.invalid = invalid }
+	return func(f *colorFlag) { f.value.parser.invalid = invalid }
 }
 
 // AddColorFlagWith is [AddColorFlag] with options: aliases, the reading of a
@@ -141,7 +151,7 @@ func AddColorFlagWith(cmd *cobra.Command, usage string, opts ...ColorOption) *Co
 	}
 	for _, name := range append([]string{"color"}, f.aliases...) {
 		cmd.PersistentFlags().Var(f.value, name, usage)
-		cmd.PersistentFlags().Lookup(name).NoOptDefVal = f.value.bareMode().String()
+		cmd.PersistentFlags().Lookup(name).NoOptDefVal = f.value.parser.bareMode().String()
 		mustRegister(cmd, name, CompleteValues(term.ColorModeNames...))
 	}
 	return f.value

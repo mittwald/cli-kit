@@ -2,6 +2,7 @@ package cobrax_test
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -62,4 +63,28 @@ func ExampleAddColorFlagWith() {
 	// Output:
 	// auto
 	// invalid argument "yes" for "--color" flag: invalid color mode "yes": want one of auto, always, never
+}
+
+// Filter keys complete without a space after them, so the value can follow.
+func ExampleCompletePrefix() {
+	keys := []cobra.Completion{"name=\tfilter by name", "namespace=", "limit"}
+	matches, directive := cobrax.CompletePrefix(keys, "na")
+	fmt.Printf("%q %v\n", matches, directive&cobra.ShellCompDirectiveNoSpace != 0)
+	// Output:
+	// ["name=\tfilter by name" "namespace="] true
+}
+
+// An older spelling keeps working, says what to use instead, and is not
+// shown in help.
+func ExampleAddFlagAlias() {
+	root := &cobra.Command{Use: "example", Run: func(*cobra.Command, []string) {}}
+	links := cobrax.AddModeFlag(root, "links", "when to make links: auto, always or never")
+	cobrax.AddFlagAlias(root, root.PersistentFlags(), cobrax.FlagAlias{Old: "no-links", New: "links", Value: "never"})
+	root.SetErr(os.Stdout)
+	root.SetArgs([]string{"--no-links"})
+	_ = root.Execute()
+	fmt.Println(links.Mode())
+	// Output:
+	// WARNING: --no-links is deprecated, use --links=never
+	// never
 }

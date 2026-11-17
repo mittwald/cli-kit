@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/mittwald/cli-kit/internal/atomicfile"
 )
 
 // ErrInsecureFile reports a secret file that is a symbolic link, not a
@@ -205,32 +207,13 @@ func (s *FileStore) Set(account, value string) error {
 // error wrapping [ErrInsecureFile], so a link planted there cannot redirect
 // the write.
 func WriteFile(path string, data []byte) error {
-	if info, err := os.Lstat(path); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+	// The temporary name has a fixed length, so a destination name close to
+	// the file system's limit still fits.
+	err := atomicfile.Write(path, data, 0o600, ".secret-*")
+	switch {
+	case errors.Is(err, atomicfile.ErrSymlink):
 		return fmt.Errorf("%w: %s is a symbolic link", ErrInsecureFile, path)
-	}
-	// CreateTemp creates the file with mode 0600, and a rename within one
-	// directory replaces the old file atomically. The temporary name has a
-	// fixed length, so a destination name close to the file system's limit
-	// still fits.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".secret-*")
-	if err != nil {
-		return fmt.Errorf("secret: write %s: %w", path, err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // fails harmlessly once renamed
-	if err := tmp.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
-		return fmt.Errorf("secret: write %s: %w", path, errors.Join(err, tmp.Close()))
-	}
-	if _, err := tmp.Write(data); err != nil {
-		return fmt.Errorf("secret: write %s: %w", path, errors.Join(err, tmp.Close()))
-	}
-	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("secret: write %s: %w", path, errors.Join(err, tmp.Close()))
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("secret: write %s: %w", path, err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	case err != nil:
 		return fmt.Errorf("secret: write %s: %w", path, err)
 	}
 	return nil
