@@ -46,12 +46,6 @@ func ExampleResolver() {
 	}
 }
 
-func ExampleRedact() {
-	token := "glpat-abc123"
-	fmt.Println(secret.Redact("GET /api?private_token=glpat-abc123", token))
-	// Output: GET /api?private_token=[REDACTED]
-}
-
 func ExampleFallback() {
 	keyring := secret.NewMemory(nil) // stands in for secret.Keyring
 	files := &secret.Memory{}        // stands in for a *secret.FileStore

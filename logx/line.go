@@ -10,7 +10,7 @@ import (
 	"sync"
 	"unicode"
 
-	"github.com/mittwald/cli-kit/secret"
+	"github.com/mittwald/cli-kit/redact"
 	"github.com/mittwald/cli-kit/term"
 )
 
@@ -39,12 +39,12 @@ type Options struct {
 // never in doubt.
 //
 // The message goes through term.Plain as well. Then the message and each
-// key=value pair go through secret.RedactPatterns, each on its own, so
+// key=value pair go through redact.Patterns, each on its own, so
 // that text in one cannot hide a credential in another: escape sequences
 // and control characters but the newline are taken out, and recognizable
 // credentials such as password=… or Bearer tokens are replaced, a quoted
 // value as a whole. A message with a newline still spans several lines. The handler does not
-// know the secrets the program holds; pass those through secret.Redact
+// know the secrets the program holds; pass those through redact.Values
 // before they reach a log record.
 //
 // A LineHandler and the handlers derived from it share one lock, so lines
@@ -74,7 +74,7 @@ func (h *LineHandler) Enabled(_ context.Context, level slog.Level) bool {
 // Handle writes the record as one line.
 func (h *LineHandler) Handle(_ context.Context, record slog.Record) error {
 	var line strings.Builder
-	line.WriteString(secret.RedactPatterns(term.Plain(record.Message)))
+	line.WriteString(redact.Patterns(term.Plain(record.Message)))
 	line.WriteString(h.attrs)
 	record.Attrs(func(attr slog.Attr) bool {
 		appendAttr(&line, h.groups, attr)
@@ -140,7 +140,7 @@ func appendAttr(b *strings.Builder, groups []string, attr slog.Attr) {
 	}
 	key.WriteString(attr.Key)
 	b.WriteByte(' ')
-	b.WriteString(secret.RedactPatterns(quote(key.String()) + "=" + quote(attr.Value.String())))
+	b.WriteString(redact.Patterns(quote(key.String()) + "=" + quote(attr.Value.String())))
 }
 
 // quote returns s as plain text, in double quotes when it is empty or holds

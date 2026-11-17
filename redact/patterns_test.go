@@ -1,12 +1,13 @@
-package secret
+package redact
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestRedactPatterns(t *testing.T) {
+func TestPatterns(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
@@ -110,15 +111,15 @@ func TestRedactPatterns(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := RedactPatterns(tt.in); got != tt.want {
-				t.Fatalf("RedactPatterns(%q) = %q, want %q", tt.in, got, tt.want)
+			if got := Patterns(tt.in); got != tt.want {
+				t.Fatalf("Patterns(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
 }
 
 // Redacting JSON leaves valid JSON, wherever the credential sits in it.
-func TestRedactPatternsKeepsJSONValid(t *testing.T) {
+func TestPatternsKeepsJSONValid(t *testing.T) {
 	for _, in := range []string{
 		`{"api_key":"sk-secretvalue","n":1}`,
 		`{"token": 12345, "ok": true}`,
@@ -145,15 +146,41 @@ func TestRedactPatternsKeepsJSONValid(t *testing.T) {
 		`{"message":"token: ['abc]secret-tail', 'other']"}`,
 		`{"m":"password='a''b\"secret-tail'","n":"ok"}`,
 	} {
-		got := RedactPatterns(in)
+		got := Patterns(in)
 		if !json.Valid([]byte(got)) {
-			t.Errorf("RedactPatterns(%s) = %s, not valid JSON", in, got)
+			t.Errorf("Patterns(%s) = %s, not valid JSON", in, got)
 		}
 		if got == in {
-			t.Errorf("RedactPatterns(%s) redacted nothing", in)
+			t.Errorf("Patterns(%s) redacted nothing", in)
 		}
 		if strings.Contains(got, "secret-tail") {
-			t.Errorf("RedactPatterns(%s) = %s, leaves part of the secret", in, got)
+			t.Errorf("Patterns(%s) = %s, leaves part of the secret", in, got)
 		}
+	}
+}
+
+// Patterns takes time in proportion to the text. A server's response that
+// repeats a label, logged at --verbose, once took seconds per 100 KB
+// because the YAML properties after each label were searched for in all
+// of the text that followed it.
+func TestPatternsIsLinear(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large inputs")
+	}
+	for _, unit := range []string{`"token":"`, "password:\n", "password: |\n", "- token: x\n", `{"m":"token=\"`} {
+		text := strings.Repeat(unit, 1<<14)
+		start := time.Now()
+		Patterns(text)
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("Patterns of %d bytes of %q took %v", len(text), unit, elapsed)
+		}
+	}
+}
+
+func BenchmarkPatterns(b *testing.B) {
+	text := strings.Repeat(`{"token":"abc","password":`+"\n"+`  !!str x, "note": "hello"}`+"\n", 1000)
+	b.SetBytes(int64(len(text)))
+	for b.Loop() {
+		Patterns(text)
 	}
 }

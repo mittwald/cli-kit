@@ -21,5 +21,6 @@
 //
 // [Hashed] gives a name a style of its own that stays the same across rows
 // and runs, such as a color per author, picked from [NamePalette] or a
-// palette of the caller's.
+// palette of the caller's. [Theme.Hashed] does the same for output painted
+// with a theme, and stays plain where the theme is [Plain].
 package theme

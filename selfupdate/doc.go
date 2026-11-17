@@ -17,14 +17,34 @@
 // # What the checksum proves
 //
 // The checksum detects a download that was corrupted, or altered on a
-// transport or storage hop between the release and the user. It does not
-// protect against somebody who can write the release's files: the
-// checksums file comes from the same release as the archive and carries no
-// signature, so whoever can replace the one can replace the other. An
+// transport or storage hop between the release and the user. On its own it
+// does not protect against somebody who can write the release's files: the
+// checksums file comes from the same release as the archive, so whoever
+// can replace the one can replace the other. Without a signature, an
 // update is as trustworthy as the account, tokens and CI jobs that may
-// publish to the release, and the TLS connection to it. A tool that needs
-// more verifies a signature of its own before it calls
-// [ReplaceExecutable].
+// publish to the release, and the TLS connection to it.
+//
+// # Signatures
+//
+// An Updater with a [Verifier] also downloads a signature of the checksums
+// file and installs nothing unless it verifies. The key that signs stays
+// out of the release, so writing to the release is no longer enough to
+// ship a binary. [Minisign] verifies minisign signatures; a tool with
+// another scheme implements Verifier. To sign with GoReleaser, create a
+// key pair with "minisign -G -W" (no password, for CI), keep the secret
+// key in a CI secret, embed the public key in the tool, and sign the
+// checksums file:
+//
+//	signs:
+//	  - artifacts: checksum
+//	    cmd: minisign
+//	    args: ["-S", "-s", "{{ .Env.MINISIGN_SECRET_KEY_FILE }}", "-m", "${artifact}", "-x", "${signature}"]
+//	    signature: "${artifact}.minisig"
+//
+// The checksums file names every archive, so its one signature covers
+// them all. Verification proves who signed, not that what they signed is
+// harmless: a signed release is as trustworthy as the place the secret key
+// is kept.
 //
 // What is extracted has to be an executable for the platform (ELF, Mach-O
 // or PE), so a file that merely has the binary's name or size is never

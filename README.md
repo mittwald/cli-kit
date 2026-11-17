@@ -35,8 +35,9 @@ compiled into your binary.
 | [`table`](https://pkg.go.dev/github.com/mittwald/cli-kit/table) | Tables in plain, framed and Markdown styles, and CSV/TSV records, with spreadsheet formulas escaped on request |
 | [`format`](https://pkg.go.dev/github.com/mittwald/cli-kit/format) | An `--output` flag value, JSON/YAML writers driven by the same struct tags, and compact ages ("3h", "5mo") |
 | [`ics`](https://pkg.go.dev/github.com/mittwald/cli-kit/ics) | An RFC 5545 iCalendar writer |
-| [`secret`](https://pkg.go.dev/github.com/mittwald/cli-kit/secret) | Credentials from flags, files, environment, stdin, the OS keyring or a hidden prompt, and redaction of known and recognizable secrets |
-| [`selfupdate`](https://pkg.go.dev/github.com/mittwald/cli-kit/selfupdate) | Self-updates from GitHub Releases or a GitLab package registry, checked against the release's checksums file |
+| [`secret`](https://pkg.go.dev/github.com/mittwald/cli-kit/secret) | Credentials from flags, files, environment, stdin, the OS keyring or a hidden prompt |
+| [`redact`](https://pkg.go.dev/github.com/mittwald/cli-kit/redact) | Known secrets and recognizable credentials removed from text before it is logged, with the standard library only |
+| [`selfupdate`](https://pkg.go.dev/github.com/mittwald/cli-kit/selfupdate) | Self-updates from GitHub Releases or a GitLab package registry, checked against the release's checksums file and, optionally, its minisign signature |
 | [`cobrax`](https://pkg.go.dev/github.com/mittwald/cli-kit/cobrax) | Cobra helpers: `--color` and other auto/always/never flags, enum flags, deprecated flag spellings as hidden aliases, hardened, cached and prefix-filtered shell completion with an optional `--install` or a script written to a path, version command |
 | [`fsx`](https://pkg.go.dev/github.com/mittwald/cli-kit/fsx) | Files replaced atomically with a chosen mode, refusing a symbolic link in their place |
 | [`browser`](https://pkg.go.dev/github.com/mittwald/cli-kit/browser) | A web page opened in the user's browser, http and https URLs only, without a shell |
@@ -45,6 +46,13 @@ compiled into your binary.
 | [`buildinfo`](https://pkg.go.dev/github.com/mittwald/cli-kit/buildinfo) | Version, commit and date from `-ldflags` or the Go build information |
 
 ## Examples
+
+To see the interactive packages at work, run the demo program:
+
+```shell
+go run github.com/mittwald/cli-kit/examples/demo@latest --help
+go run github.com/mittwald/cli-kit/examples/demo@latest pick
+```
 
 ### Color and terminal
 
@@ -65,7 +73,7 @@ fmt.Print(th.PaintDiff(term.Plain(diff))) // a diff from elsewhere: made plain f
 fmt.Println(term.Sanitize(jobLog))        // its colors kept, every other escape gone
 fmt.Println(term.PlainLine(name))         // one line, no escape sequence, no color
 fmt.Println(th.PaintJSON(string(data)))   // JSON from encoding/json: keys, strings, numbers, literals
-author := theme.Hashed(name, nil)         // the same color for the same name, on every run
+author := th.Hashed(name)                 // the same color for the same name, on every run
 if term.ShouldLink(links.Mode(), os.Stdout) {
 	fmt.Println(term.Hyperlink(url, term.PlainLine(name)))
 }
@@ -164,18 +172,24 @@ without a terminal, set `StdinBusy` so that stdin is left alone.
 ### Self-update
 
 ```go
+verifier, err := selfupdate.NewMinisign(publicKey) // "RWQ…", from minisign -G
 u := &selfupdate.Updater{
-	Source:  &selfupdate.GitHub{Owner: "example", Repo: "tool"},
-	Current: buildinfo.Get().Version,
-	Asset:   selfupdate.VersionedAssets("tool"),
+	Source:   &selfupdate.GitHub{Owner: "example", Repo: "tool"},
+	Current:  buildinfo.Get().Version,
+	Asset:    selfupdate.VersionedAssets("tool"),
+	Verifier: verifier, // checksums.txt must carry a valid checksums.txt.minisig
 }
 res, err := u.Update(ctx, false) // checks the archive against checksums.txt; refuses package-managed installs
 ```
 
-The checksum detects a corrupted or altered download. It does not protect
-against someone who can write the release's files, because the checksums
-file is published in the same place. The archive must hold an executable
-for the platform, and a credential is only sent to an `https` API address.
+The checksum detects a corrupted or altered download. On its own it does
+not protect against someone who can write the release's files, because the
+checksums file is published in the same place. A `Verifier` closes that
+gap: the checksums file must be signed with a key that never touches the
+release, such as a minisign key held in a CI secret. The package
+documentation shows the GoReleaser `signs` entry. The archive must hold an
+executable for the platform, and a credential is only sent to an `https`
+API address.
 
 ### Files, browser and logs
 
@@ -191,6 +205,7 @@ if verbose {
 }
 logger := slog.New(logx.NewLineHandler(os.Stderr, &logx.Options{Level: level}))
 logger.Debug("sent a request", "path", path, "status", status) // plain, credentials redacted
+logger.Debug("response", "body", redact.Values(body, token))   // the token the program sent, in any escaped form
 ```
 
 ### Shell completion and version

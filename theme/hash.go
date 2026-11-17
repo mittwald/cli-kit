@@ -43,3 +43,19 @@ func Hashed(name string, palette []Style) Style {
 	_, _ = digest.Write([]byte(folded))
 	return palette[uint64(digest.Sum32())%uint64(len(palette))]
 }
+
+// Hashed is [Hashed] for output painted with t: the zero Style where t is
+// [Plain], such as what [Theme.For] returns for a pipe or a file, so a name
+// colored this way stays plain wherever the rest of t does:
+//
+//	th := theme.Active().For(os.Stdout)
+//	fmt.Println(th.Hashed(author).Paint(author), th.Muted.Paint(date))
+//
+// An empty palette means [NamePalette]. The package-level Hashed paints
+// wherever its result is used; call [Style.For] on it, or use this method.
+func (t Theme) Hashed(name string, palette ...Style) Style {
+	if t == Plain {
+		return ""
+	}
+	return Hashed(name, palette)
+}
