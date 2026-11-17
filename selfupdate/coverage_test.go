@@ -98,7 +98,8 @@ func TestPrepareReportsAMissingDirectory(t *testing.T) {
 // not happen.
 func TestInstallReportsAFailedReplacement(t *testing.T) {
 	u, _, exe := newFixture(t)
-	// A directory that is not empty takes no file's place.
+	// A directory takes no file's place, on Windows either, where the old
+	// file is moved aside first.
 	u.Executable = filepath.Join(filepath.Dir(exe), "tool-dir")
 	u.Binary = "tool"
 	if err := os.MkdirAll(filepath.Join(u.Executable, "inner"), 0o700); err != nil {
@@ -110,6 +111,9 @@ func TestInstallReportsAFailedReplacement(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "replace") {
 		t.Fatalf("Update = %v, want the failed replacement reported", err)
+	}
+	if _, err := os.Stat(filepath.Join(u.Executable, "inner")); err != nil {
+		t.Fatalf("the directory was moved or changed: %v", err)
 	}
 }
 

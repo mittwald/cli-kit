@@ -113,6 +113,11 @@ func ReplaceExecutable(path string, binary []byte) error {
 	dir := filepath.Dir(path)
 	mode := fs.FileMode(0o755)
 	if info, err := os.Stat(path); err == nil {
+		// Only a file is replaced. On Windows the old one is moved aside
+		// first, which would carry off a directory as well.
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("selfupdate: replace %s: not a regular file", path)
+		}
 		mode = info.Mode().Perm() | 0o100
 	}
 	// The replacement must be on the same file system as path, so the
