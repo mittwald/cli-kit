@@ -31,10 +31,9 @@ var (
 // was not corrupted, and not altered on a transport or storage hop
 // between the release and here. It proves nothing about who made the
 // file. An [Updater] fetches the checksums file from the same release as
-// the archive, and the file carries no signature, so somebody who can
-// write the release's files can replace both, and the pair verifies. The
-// update is as trustworthy as the place the release is published in and
-// the TLS connection to it, not more.
+// the archive, so somebody who can write the release's files can replace
+// both, and the pair verifies, unless the Updater has a [Verifier] that
+// checks a signature of the checksums file.
 func VerifyChecksum(checksums []byte, name string, data []byte) error {
 	want, err := findChecksum(checksums, name)
 	if err != nil {

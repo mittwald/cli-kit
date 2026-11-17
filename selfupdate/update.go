@@ -52,8 +52,14 @@ type Updater struct {
 	// SkipChecksum installs the archive without verifying it, for a source
 	// that publishes no checksums file. What is lost is the detection of a
 	// download that was corrupted or altered on its way; the checksum never
-	// proved more than that (see [VerifyChecksum]).
+	// proved more than that (see [VerifyChecksum]). It cannot be combined
+	// with Verifier.
 	SkipChecksum bool
+	// Verifier, when set, requires the checksums file to carry a valid
+	// signature by a trusted key, published beside it under the name
+	// Verifier.SignatureName gives. The archive is then installed only when
+	// it matches a checksums file the key holder signed; see [Minisign].
+	Verifier Verifier
 	// Binary is the file name of the binary inside the archive, without
 	// ".exe"; empty means the running executable's own name. When no file
 	// has that name, the largest file is taken. Either way the file has to
@@ -135,6 +141,7 @@ func (u *Updater) Update(ctx context.Context, force bool) (Result, error) {
 // manager owns, and fails early when the executable's directory is not
 // writable. The archive is verified against the release's checksums file
 // unless SkipChecksum is set; see [VerifyChecksum] for what that proves.
+// With a Verifier, the checksums file has to carry a valid signature too.
 func (u *Updater) Install(ctx context.Context, rel Release) (Result, error) {
 	result, err := u.prepare()
 	if err != nil {
@@ -161,6 +168,9 @@ func (u *Updater) prepare() (Result, error) {
 	}
 	if u.Source == nil {
 		return Result{}, errors.New("selfupdate: Updater.Source is required")
+	}
+	if u.Verifier != nil && u.SkipChecksum {
+		return Result{}, errors.New("selfupdate: Updater.Verifier needs the checksums file that SkipChecksum skips")
 	}
 	path, err := u.executable()
 	if err != nil {
@@ -196,6 +206,16 @@ func (u *Updater) install(ctx context.Context, result Result) (Result, error) {
 		checksums, err := u.download(ctx, rel, checksumsName, maxChecksumsSize)
 		if err != nil {
 			return result, fmt.Errorf("selfupdate: fetch checksums to verify %s: %w", plain(name), err)
+		}
+		if u.Verifier != nil {
+			signatureName := u.Verifier.SignatureName(checksumsName)
+			signature, err := u.download(ctx, rel, signatureName, maxSignatureSize)
+			if err != nil {
+				return result, fmt.Errorf("selfupdate: fetch signature to verify %s: %w", plain(checksumsName), err)
+			}
+			if err := u.Verifier.Verify(checksums, signature); err != nil {
+				return result, fmt.Errorf("%s: %w", plain(checksumsName), err)
+			}
 		}
 		if err := VerifyChecksum(checksums, name, archive); err != nil {
 			return result, err
