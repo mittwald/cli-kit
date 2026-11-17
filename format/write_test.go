@@ -145,7 +145,7 @@ func TestYAMLQuotesWhatReadersTakeForSomethingElse(t *testing.T) {
 			want  string
 		}{
 			{"value", map[string]string{"v": s}, "v: " + quoted + "\n"},
-			{"item", []string{s}, "  - " + quoted + "\n"},
+			{"item", []string{s}, "- " + quoted + "\n"},
 			{"key", map[string]int{s: 1}, quoted + ": 1\n"},
 			{"root", s, quoted + "\n"},
 		} {
@@ -670,5 +670,31 @@ func TestYAMLParsesBackToTheJSONView(t *testing.T) {
 				t.Fatalf("YAML does not carry the JSON view\nyaml: %v\njson: %s\n%s", fromYAML, encoded, out.String())
 			}
 		})
+	}
+}
+
+// A list at the root starts at the first column, as yq and kubectl write
+// it, and reads back as what JSON holds, block scalars and nested lists
+// included.
+func TestYAMLRootSequence(t *testing.T) {
+	in := []any{
+		map[string]any{"name": "api", "note": "two\nlines", "ports": []any{80, 443}},
+		[]any{"a", []any{}},
+		"plain",
+	}
+	var y bytes.Buffer
+	if err := WriteYAML(&y, in); err != nil {
+		t.Fatalf("WriteYAML returned error: %v", err)
+	}
+	want := "- name: api\n  note: |-\n    two\n    lines\n  ports:\n    - 80\n    - 443\n- - a\n  - []\n- plain\n"
+	if got := y.String(); got != want {
+		t.Fatalf("WriteYAML = %q, want %q", got, want)
+	}
+	var back []any
+	if err := yaml.Unmarshal(y.Bytes(), &back); err != nil {
+		t.Fatalf("re-reading the YAML failed: %v", err)
+	}
+	if got, want := viaJSON(t, back), viaJSON(t, in); !reflect.DeepEqual(got, want) {
+		t.Errorf("YAML reads back as %v, want %v", got, want)
 	}
 }

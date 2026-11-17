@@ -215,8 +215,8 @@ type yamlEncoder struct {
 	out []byte
 }
 
-// document writes the whole document. A sequence at the root is indented
-// like one under a key.
+// document writes the whole document. A sequence at the root starts at the
+// first column, as yq, kubectl and the YAML libraries write it.
 func (e *yamlEncoder) document(v any) {
 	switch v := v.(type) {
 	case yamlMapping:
@@ -226,7 +226,7 @@ func (e *yamlEncoder) document(v any) {
 		}
 	case []any:
 		if len(v) > 0 {
-			e.sequence(v, yamlIndent, false)
+			e.sequence(v, 0, false)
 			return
 		}
 	}
