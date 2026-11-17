@@ -1,6 +1,7 @@
 package theme
 
 import (
+	"bytes"
 	"slices"
 	"testing"
 )
@@ -46,5 +47,24 @@ func TestHashedOwnPalette(t *testing.T) {
 	}
 	if got := Hashed("alice", []Style{"35"}); got != "35" {
 		t.Errorf("Hashed with a palette of one = %q, want it", got)
+	}
+}
+
+// A theme's Hashed paints nothing where the theme paints nothing, and
+// otherwise picks what the package-level Hashed picks.
+func TestThemeHashed(t *testing.T) {
+	if got := Plain.Hashed("alice"); got != "" {
+		t.Errorf("Plain.Hashed = %q, want the zero Style", got)
+	}
+	var out bytes.Buffer
+	if got := Default.For(&out).Hashed("alice"); got != "" {
+		t.Errorf("Default.For(buffer).Hashed = %q, want the zero Style", got)
+	}
+	if got, want := Default.Hashed("alice"), Hashed("alice", nil); got != want || got == "" {
+		t.Errorf("Default.Hashed = %q, want %q", got, want)
+	}
+	palette := []Style{Bold}
+	if got := Default.Hashed("alice", palette...); got != Bold {
+		t.Errorf("Default.Hashed with a palette = %q, want %q", got, Bold)
 	}
 }
