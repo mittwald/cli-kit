@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -207,5 +209,33 @@ func TestVerifierExcludesSkipChecksum(t *testing.T) {
 	}
 	if source.calls != 0 {
 		t.Fatal("asked the source before refusing the configuration")
+	}
+}
+
+// TestMinisignVerifiesAnotherImplementation checks the verifier against a
+// key and signature made by aead.dev/minisign, an implementation written
+// apart from this one, so a misreading of the format shared by the test
+// signer above and the verifier cannot pass unnoticed.
+func TestMinisignVerifiesAnotherImplementation(t *testing.T) {
+	read := func(name string) []byte {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join("testdata", "minisign", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	m, err := NewMinisign(string(read("minisign.pub")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, signature := read("checksums.txt"), read("checksums.txt.minisig")
+	if err := m.Verify(message, signature); err != nil {
+		t.Fatalf("Verify = %v", err)
+	}
+	changed := append([]byte{}, message...)
+	changed[0] ^= 1
+	if err := m.Verify(changed, signature); !errors.Is(err, ErrSignature) {
+		t.Errorf("Verify of a changed file = %v, want ErrSignature", err)
 	}
 }

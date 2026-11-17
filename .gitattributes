@@ -1,0 +1,2 @@
+# Signed fixtures must keep their bytes on every platform.
+selfupdate/testdata/minisign/** -text
