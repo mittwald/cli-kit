@@ -17,9 +17,15 @@ make test-min   # run the tests on Go 1.27.0, the oldest supported release
 ```
 
 Interactive packages (`pick`, `live`, `progress`) are tested without a
-terminal. To try them by hand, write a small `main` package in a scratch
-directory with a `replace github.com/mittwald/cli-kit => ../cli-kit`
-directive.
+terminal. To try them by hand, run the demo program:
+`go run ./examples/demo --help` lists its commands, and `make demo ARGS=pick`
+runs one.
+
+Code that reads untrusted input (escape sequences, archives, signatures,
+redaction, style specifications) has fuzz targets. Their seeds run with
+`go test`; `make fuzz` runs every target for `FUZZTIME` (30s by default).
+Add a target when you add such a parser, and commit any failing input the
+fuzzer finds under `testdata/fuzz` together with the fix.
 
 ## Ground rules
 

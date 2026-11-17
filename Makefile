@@ -3,7 +3,7 @@ GOLANGCI_LINT ?= golangci-lint
 # The oldest Go release cli-kit supports; keep it in sync with go.mod.
 GO_MIN ?= go1.27.0
 
-.PHONY: all test race cover lint fmt vet cross test-min test-locale tidy-check check
+.PHONY: all test race cover lint fmt vet cross test-min test-locale fuzz demo tidy-check check
 
 all: check
 
@@ -43,6 +43,21 @@ test-min:
 # characters as wide.
 test-locale:
 	LC_ALL=ja_JP.UTF-8 RUNEWIDTH_EASTASIAN=1 $(GO) test ./...
+
+# Run every fuzz target for FUZZTIME each. Their seed corpora already run
+# with the plain tests.
+FUZZTIME ?= 30s
+fuzz:
+	@set -e; for pkg in $$($(GO) list ./...); do \
+		for target in $$($(GO) test -list '^Fuzz' $$pkg | grep '^Fuzz' || true); do \
+			echo "$$pkg $$target"; \
+			$(GO) test -run '^$$' -fuzz "^$$target$$" -fuzztime $(FUZZTIME) $$pkg; \
+		done; \
+	done
+
+# Try the interactive packages by hand: make demo ARGS=pick
+demo:
+	$(GO) run ./examples/demo $(ARGS)
 
 tidy-check:
 	$(GO) mod tidy -diff

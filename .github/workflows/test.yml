@@ -67,7 +67,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
-      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      # Pinned like golangci-lint, so a new release cannot fail an
+      # unchanged commit. The vulnerability database is always current.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   cross:
     name: Cross-compile
