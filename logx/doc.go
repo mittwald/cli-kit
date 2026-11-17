@@ -5,8 +5,8 @@
 // error stream. A log line often carries text from elsewhere, such as a
 // server's error message or a request URL, so every line is made plain
 // text (term.Plain), and credentials it recognizes by their shape are
-// replaced (secret.RedactPatterns) before it is written.
+// replaced (redact.Patterns) before it is written.
 //
-// The handler lives in a package of its own because it needs both term and
-// secret, and secret already depends on term.
+// The handler depends on term and redact only, so a tool that logs does not
+// compile in the keyring and prompt code of the secret package.
 package logx
