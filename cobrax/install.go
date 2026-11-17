@@ -2,7 +2,6 @@ package cobrax
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/mittwald/cli-kit/fsx"
 )
 
 // installShells are the shells whose completion command AddCompletionInstall
@@ -30,7 +31,8 @@ var installShells = []string{"bash", "zsh", "fish"}
 // renamed, so a shell starting meanwhile reads the old script or the new
 // one, never half of one. Missing directories are created. The script can
 // be read by its owner only, which is all a shell running as that user
-// needs. --no-descriptions applies as it does to a script that is printed.
+// needs. A symbolic link where the file belongs is refused rather than
+// replaced, as [fsx.WriteFile] refuses it. --no-descriptions applies as it does to a script that is printed.
 // A failure to write the file is returned as a [*ScriptError].
 //
 // The flag is opt-in, so a tool decides whether its completion command
@@ -81,7 +83,7 @@ func installCompletion(cmd *cobra.Command, program, shell string, generate func(
 	if err := generate(cmd, &script); err != nil {
 		return "", err
 	}
-	if err := replaceFile(path, script.Bytes()); err != nil {
+	if err := replaceFile(path, script.Bytes(), 0o750); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -158,38 +160,42 @@ func xdgDir(env string, fallback ...string) (string, error) {
 	return filepath.Join(append([]string{home}, fallback...)...), nil
 }
 
-// replaceFile writes data to path through a temporary file in the same
-// directory, renamed into place, creating the directory when it is missing.
-// The file can be read by its owner only.
-func replaceFile(path string, data []byte) (err error) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+// replaceFile writes data to path with [fsx.WriteFile], readable by its
+// owner only, creating the directory with mode dirPerm when it is missing.
+func replaceFile(path string, data []byte, dirPerm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, removeIfPresent(tmp.Name()))
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return fsx.WriteFile(path, data, 0o600)
 }
 
-// removeIfPresent removes path, and reports an error only when it is still
-// there.
-func removeIfPresent(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+// WriteCompletionScript writes the completion script of root for shell,
+// one of bash, zsh, fish and powershell, to path. It is for a tool that
+// keeps its script where an earlier version put it, such as a file in its
+// configuration directory that the user's shell profile sources;
+// [AddCompletionInstall] writes to the directory the shell loads scripts
+// from by itself.
+//
+// The script carries descriptions unless
+// root.CompletionOptions.DisableDescriptions is set. The file is replaced
+// atomically, as AddCompletionInstall replaces it, and can be read by its
+// owner only. Missing directories are created for their owner only (mode
+// 0700), since the directory may be one the tool keeps other files in. A
+// symbolic link at path is refused, as [fsx.WriteFile] refuses it.
+//
+// An unknown shell is an error; a failure to generate or write the script
+// is returned as a [*ScriptError].
+func WriteCompletionScript(root *cobra.Command, shell, path string) error {
+	generate := generator(root, shell)
+	if generate == nil {
+		return fmt.Errorf("write completion script: unsupported shell %q: want bash, zsh, fish or powershell", shell)
+	}
+	var script bytes.Buffer
+	if err := generate(root, &script); err != nil {
+		return &ScriptError{Shell: shell, Err: err}
+	}
+	if err := replaceFile(path, script.Bytes(), 0o700); err != nil {
+		return &ScriptError{Shell: shell, Err: err}
 	}
 	return nil
 }

@@ -1,9 +1,13 @@
 // Package cobrax collects the cobra and pflag wiring command-line tools keep
-// rewriting: a --color[=WHEN] flag, enumerated flags that complete their
-// values, file completion switched off where no file is expected, a
-// hardened completion command that can install its scripts for the current
-// user, completion candidates cached on disk, the "--flag false" spelling of
-// boolean flags, and version output.
+// rewriting: a --color[=WHEN] flag and other flags that take auto, always
+// or never ([AddModeFlag]), enumerated flags that complete their values,
+// older spellings of flags kept as hidden switches ([AddFlagAlias]), file
+// completion switched off where no file is expected, a hardened completion
+// command that can install its scripts for the current user or write them
+// to a path of the tool's choice, completion candidates cached on disk,
+// filtered by prefix ([CompletePrefix]) and kept free of control characters
+// ([SafeCompletions]), the "--flag false" spelling of boolean flags, and
+// version output.
 //
 // A typical root command:
 //

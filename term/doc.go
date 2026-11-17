@@ -25,5 +25,7 @@
 // Text that is shown plain, without the sender's colors, goes through [Plain]
 // instead, and a value shown within one line, such as a name or a header,
 // through [PlainLine]. A URL that becomes a link with [Hyperlink] must hold
-// no control character, or it is no link.
+// no control character, or it is no link; [ShouldLink] decides whether a
+// stream gets links at all, under a --links mode as [ShouldColor] does under
+// --color.
 package term

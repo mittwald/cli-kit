@@ -27,8 +27,8 @@ compiled into your binary.
 
 | Package | What it does |
 |---|---|
-| [`term`](https://pkg.go.dev/github.com/mittwald/cli-kit/term) | Terminal detection and size, the `--color` mode with `NO_COLOR` and `TERM=dumb`, visible text width, truncation, padding, word wrapping, OSC 8 hyperlinks, 24-bit color detection, and untrusted output made safe to show |
-| [`theme`](https://pkg.go.dev/github.com/mittwald/cli-kit/theme) | SGR styles, the color roles the other packages paint with, unified diffs painted the way git paints them, painted JSON, and a stable color per name |
+| [`term`](https://pkg.go.dev/github.com/mittwald/cli-kit/term) | Terminal detection and size, the `--color` mode with `NO_COLOR` and `TERM=dumb`, visible text width, truncation, padding, word wrapping, OSC 8 hyperlinks and when to write them, 24-bit color detection, and untrusted output made safe to show |
+| [`theme`](https://pkg.go.dev/github.com/mittwald/cli-kit/theme) | SGR styles, styles parsed from user settings ("fg=white:bg=#aa0000:bold"), regular expression matches painted into painted text, the color roles the other packages paint with, unified diffs painted the way git paints them, painted JSON, and a stable color per name |
 | [`pick`](https://pkg.go.dev/github.com/mittwald/cli-kit/pick) | Interactive list selection with filtering, views and ranges, per-row and in-cell painting, an adjustable look, switches, and line-edited text and secret input |
 | [`live`](https://pkg.go.dev/github.com/mittwald/cli-kit/live) | Blocks of lines redrawn in place, detail/result output separation, and cursor and terminal restore on exit, panic and signals |
 | [`progress`](https://pkg.go.dev/github.com/mittwald/cli-kit/progress) | A gradient progress bar with a stall countdown that steps aside for log lines |
@@ -37,7 +37,10 @@ compiled into your binary.
 | [`ics`](https://pkg.go.dev/github.com/mittwald/cli-kit/ics) | An RFC 5545 iCalendar writer |
 | [`secret`](https://pkg.go.dev/github.com/mittwald/cli-kit/secret) | Credentials from flags, files, environment, stdin, the OS keyring or a hidden prompt, and redaction of known and recognizable secrets |
 | [`selfupdate`](https://pkg.go.dev/github.com/mittwald/cli-kit/selfupdate) | Self-updates from GitHub Releases or a GitLab package registry, checked against the release's checksums file |
-| [`cobrax`](https://pkg.go.dev/github.com/mittwald/cli-kit/cobrax) | Cobra helpers: `--color`, enum flags, hardened and cached shell completion with an optional `--install`, version command |
+| [`cobrax`](https://pkg.go.dev/github.com/mittwald/cli-kit/cobrax) | Cobra helpers: `--color` and other auto/always/never flags, enum flags, deprecated flag spellings as hidden aliases, hardened, cached and prefix-filtered shell completion with an optional `--install` or a script written to a path, version command |
+| [`fsx`](https://pkg.go.dev/github.com/mittwald/cli-kit/fsx) | Files replaced atomically with a chosen mode, refusing a symbolic link in their place |
+| [`browser`](https://pkg.go.dev/github.com/mittwald/cli-kit/browser) | A web page opened in the user's browser, http and https URLs only, without a shell |
+| [`logx`](https://pkg.go.dev/github.com/mittwald/cli-kit/logx) | A `log/slog` handler writing plain, redacted lines for `--verbose` |
 | [`clipboard`](https://pkg.go.dev/github.com/mittwald/cli-kit/clipboard) | Text copied to the system clipboard through the platform's helper commands, without cgo |
 | [`buildinfo`](https://pkg.go.dev/github.com/mittwald/cli-kit/buildinfo) | Version, commit and date from `-ldflags` or the Go build information |
 
@@ -47,6 +50,9 @@ compiled into your binary.
 
 ```go
 cobrax.AddColorFlag(root, "when to use color: auto, always or never")
+links := cobrax.AddModeFlag(root, "links", "when to make links: auto, always or never")
+cobrax.AddFlagAlias(root, root.PersistentFlags(), // the old spelling, hidden, with a note
+	cobrax.FlagAlias{Old: "no-links", New: "links", Value: "never"})
 
 if term.Colored(os.Stdout) {
 	fmt.Println(theme.Active().Success.Paint("done"))
@@ -60,6 +66,11 @@ fmt.Println(term.Sanitize(jobLog))        // its colors kept, every other escape
 fmt.Println(term.PlainLine(name))         // one line, no escape sequence, no color
 fmt.Println(th.PaintJSON(string(data)))   // JSON from encoding/json: keys, strings, numbers, literals
 author := theme.Hashed(name, nil)         // the same color for the same name, on every run
+if term.ShouldLink(links.Mode(), os.Stdout) {
+	fmt.Println(term.Hyperlink(url, term.PlainLine(name)))
+}
+style, ok := theme.ParseStyle(os.Getenv("EXAMPLE_COLOR_ERROR")) // "red:bold", "245", "bg=#aa0000"
+fmt.Println(style.For(os.Stdout).PaintMatches(line, errorPattern)) // the line keeps its own colors
 ```
 
 ### Tables and structured output
@@ -166,6 +177,22 @@ against someone who can write the release's files, because the checksums
 file is published in the same place. The archive must hold an executable
 for the platform, and a credential is only sent to an `https` API address.
 
+### Files, browser and logs
+
+```go
+err := fsx.WriteFile(configPath, data, 0o644) // atomic; secret.WriteFile for a token cache
+
+fmt.Fprintln(os.Stderr, "Opening", term.PlainLine(loginURL)) // say it, in case nothing opens
+_ = browser.Open(ctx, loginURL)                               // http and https only
+
+level := slog.LevelInfo
+if verbose {
+	level = slog.LevelDebug
+}
+logger := slog.New(logx.NewLineHandler(os.Stderr, &logx.Options{Level: level}))
+logger.Debug("sent a request", "path", path, "status", status) // plain, credentials redacted
+```
+
 ### Shell completion and version
 
 ```go
@@ -173,6 +200,7 @@ cobrax.SetVersion(root, buildinfo.Get())
 root.AddCommand(cobrax.NewVersionCommand(buildinfo.Get()))
 cobrax.NoFileCompletions(root)
 cobrax.AddCompletionInstall(cobrax.HardenCompletion(root)) // "completion bash --install"
+cobrax.WriteCompletionScript(root, "zsh", legacyPath)      // where an older version kept it
 root.SetArgs(cobrax.JoinSpacedBoolValues(root, os.Args[1:]))
 ```
 

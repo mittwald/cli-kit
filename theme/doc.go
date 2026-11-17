@@ -15,6 +15,10 @@
 // [Theme.PaintJSON] paints encoded JSON with the theme's JSON roles in the
 // same way.
 //
+// [ParseStyle] reads a style a user wrote, such as "fg=white:bg=#aa0000:bold"
+// in an environment variable, and [Style.PaintMatches] paints what a
+// regular expression matches in text that may be painted already.
+//
 // [Hashed] gives a name a style of its own that stays the same across rows
 // and runs, such as a color per author, picked from [NamePalette] or a
 // palette of the caller's.
