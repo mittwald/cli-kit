@@ -78,6 +78,13 @@
 // links are resolved first, so the file a link leads to is the one that is
 // judged and replaced. See [PackageManaged] for what is recognized.
 //
+// The one exception is a .deb from an APT repository that is registered on
+// the system, such as one whose package adds the repository when it is
+// installed. With [Updater.APT] set, such an executable is checked
+// against that repository and updated from it through APT, with sudo
+// when the process is not root, after [APT.Confirm] agreed to the
+// commands it was shown.
+//
 // # Requests and credentials
 //
 // Requests are bounded by the context they are given. A source without an
