@@ -89,6 +89,15 @@ func Interactive(in, out *os.File) bool {
 	return in != nil && out != nil && IsTerminal(in) && IsTerminal(out)
 }
 
+// Controls reports whether v is a terminal that acts on escape sequences:
+// moves its cursor, switches screens, paints. On Windows it switches the
+// console's virtual terminal processing on first, whatever the color mode,
+// so a full-screen program works with --color=never and NO_COLOR as well.
+// A terminal that says it is dumb (TERM=dumb) does not.
+func Controls(v any) bool {
+	return os.Getenv("TERM") != "dumb" && IsTerminal(v) && !plainConsole(v)
+}
+
 // ErrNoTTY is returned by [OpenTTY] where no controlling terminal can be
 // opened apart from the standard streams.
 var ErrNoTTY = errors.New("term: no controlling terminal")
