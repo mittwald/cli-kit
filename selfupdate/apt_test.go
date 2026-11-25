@@ -147,7 +147,7 @@ func TestAPTUpdateAsUser(t *testing.T) {
 		t.Fatalf("ran %q, showed %q", dpkg.ran, shown.Commands)
 	}
 	want := "/usr/bin/sudo -- /usr/bin/apt-get update\n" +
-		"/usr/bin/sudo -- /usr/bin/apt-get install --yes --allow-downgrades -- " + shown.File
+		"/usr/bin/sudo -- /usr/bin/apt-get install --yes --allow-downgrades -- " + shellQuote(shown.File)
 	if got := shown.String(); got != want {
 		t.Fatalf("plan:\n%s\nwant:\n%s", got, want)
 	}
