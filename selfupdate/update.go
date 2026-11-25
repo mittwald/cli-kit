@@ -75,6 +75,12 @@ type Updater struct {
 	// means [PackageManaged]; a tool that ships no OS package and may
 	// replace itself anywhere sets a function that always returns false.
 	Managed func(path string) bool
+	// APT, when set, updates a managed executable that a .deb installed
+	// from a registered APT repository through APT, instead of refusing
+	// it; the repository then also replaces Source as where the latest
+	// version is read. See [APT] for when it applies. Nil refuses every
+	// managed executable.
+	APT *APT
 	// MaxDownload bounds the archive size in bytes; zero means
 	// [DefaultMaxDownload]. The archive is held in memory.
 	MaxDownload int64
@@ -84,10 +90,17 @@ type Updater struct {
 type Result struct {
 	// From is the version that ran before the update.
 	From string
-	// Release is the latest release, or the one Install was given.
+	// Release is the latest release, or the one Install was given. When
+	// [APT] updates the executable, its Tag is the package's version in
+	// the repository, such as "1.2.3".
 	Release Release
-	// Asset is the archive that was installed; empty when nothing was.
+	// Asset is the archive that was installed; empty when nothing was, or
+	// when APT installed the release.
 	Asset string
+	// Package is the Debian package that owns the executable, as
+	// [APTPlan.Package] names it, when [APT] updates it, whether or not it
+	// installed anything; empty otherwise.
+	Package string
 	// Path is the executable that was, or would have been, replaced.
 	Path string
 	// Updated is false when the running version was already current.
@@ -97,8 +110,20 @@ type Result struct {
 // Check returns the latest release and whether it is newer than Current.
 // When the release's tag is no version, such as "release-2", it cannot
 // tell: it returns the release with an error wrapping [ErrNoVersion]
-// rather than report the running version as current forever.
+// rather than report the running version as current forever. An
+// executable that [Updater.APT] applies to is checked against the APT
+// repository instead, and newer means the repository offers a version
+// other than the installed one.
 func (u *Updater) Check(ctx context.Context) (Release, bool, error) {
+	if _, pkg, err := u.aptPackage(ctx); err != nil {
+		return Release{}, false, err
+	} else if pkg != "" {
+		latest, installed, err := u.APT.check(ctx, pkg)
+		if err != nil {
+			return Release{}, false, err
+		}
+		return Release{Tag: latest}, latest != installed, nil
+	}
 	if u.Source == nil {
 		return Release{}, false, errors.New("selfupdate: Updater.Source is required")
 	}
@@ -118,8 +143,13 @@ func (u *Updater) Check(ctx context.Context) (Release, bool, error) {
 // release whose tag is no version is an error wrapping [ErrNoVersion],
 // with force too; [Updater.Install] installs such a release.
 func (u *Updater) Update(ctx context.Context, force bool) (Result, error) {
-	result, err := u.prepare()
+	result, err := u.prepare(ctx)
 	if err != nil {
+		return result, err
+	}
+	if result.Package != "" {
+		version, updated, err := u.APT.update(ctx, result.Package, Release{}, force)
+		result.Release, result.Updated = Release{Tag: version}, updated
 		return result, err
 	}
 	rel, newer, err := u.Check(ctx)
@@ -142,12 +172,21 @@ func (u *Updater) Update(ctx context.Context, force bool) (Result, error) {
 // writable. The archive is verified against the release's checksums file
 // unless SkipChecksum is set; see [VerifyChecksum] for what that proves.
 // With a Verifier, the checksums file has to carry a valid signature too.
+// An executable that [Updater.APT] applies to is updated through APT
+// instead, to the version of the package rel's version names.
 func (u *Updater) Install(ctx context.Context, rel Release) (Result, error) {
-	result, err := u.prepare()
+	result, err := u.prepare(ctx)
 	if err != nil {
 		return result, err
 	}
 	result.Release = rel
+	if result.Package != "" {
+		if rel.Tag == "" {
+			return result, fmt.Errorf("%w: %q", ErrNoVersion, rel.Tag)
+		}
+		_, result.Updated, err = u.APT.update(ctx, result.Package, rel, true)
+		return result, err
+	}
 	return u.install(ctx, result)
 }
 
@@ -161,8 +200,15 @@ func (u *Updater) AssetName(rel Release) string {
 	return u.Asset(rel, u.platform())
 }
 
-// prepare locates the executable and makes sure it may be replaced.
-func (u *Updater) prepare() (Result, error) {
+// prepare locates the executable and makes sure it may be replaced, or
+// that APT updates it.
+func (u *Updater) prepare(ctx context.Context) (Result, error) {
+	// APT needs neither an archive nor a Source.
+	if path, pkg, err := u.aptPackage(ctx); err != nil {
+		return Result{}, err
+	} else if pkg != "" {
+		return Result{From: u.Current, Path: path, Package: pkg}, nil
+	}
 	if u.Asset == nil {
 		return Result{}, errors.New("selfupdate: Updater.Asset is required")
 	}
@@ -191,6 +237,26 @@ func (u *Updater) prepare() (Result, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+// aptPackage returns the executable and the package APT updates it
+// through, or no package when APT does not apply to it.
+func (u *Updater) aptPackage(ctx context.Context) (path, pkg string, err error) {
+	if u.APT == nil {
+		return "", "", nil
+	}
+	path, err = u.executable()
+	if err != nil {
+		return "", "", err
+	}
+	managed := u.Managed
+	if managed == nil {
+		managed = PackageManaged
+	}
+	if !managed(path) {
+		return path, "", nil
+	}
+	return path, u.APT.owner(ctx, path), nil
 }
 
 // install downloads, verifies and installs result.Release over result.Path.

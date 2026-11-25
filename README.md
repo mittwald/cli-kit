@@ -192,6 +192,32 @@ documentation shows the GoReleaser `signs` entry. The archive must hold an
 executable for the platform, and a credential is only sent to an `https`
 API address.
 
+A `.deb` install is refused by default. If the package comes from an APT
+repository that is registered on the system, `Updater.APT` updates it through
+APT instead. `Check` and `Update` then read the latest version from that
+repository, so the `Source` and its token are not needed. The repository's
+index and the package are fetched without root privileges into a temporary
+directory. Only `apt-get update` and `apt-get install` of the downloaded file
+run as root, through sudo when needed, so dependencies come from all of the
+system's repositories. `Confirm` sees the exact commands first, so a command
+can ask before it runs them, or skip the question for `--yes`:
+
+```go
+u.APT = &selfupdate.APT{
+	Sources: "/etc/apt/sources.list.d/example.sources", // the file the package registers
+	Confirm: func(ctx context.Context, plan selfupdate.APTPlan) (bool, error) {
+		if yes {
+			return true, nil
+		}
+		fmt.Fprintf(os.Stderr, "Update %s %s to %s with:\n%s\n", plan.Package, plan.Installed, plan.Version, plan)
+		return askYesNo("Continue?") // the tool's own prompt
+	},
+}
+```
+
+APT verifies the index with the repository key, and the package against the
+index.
+
 ### Files, browser and logs
 
 ```go
