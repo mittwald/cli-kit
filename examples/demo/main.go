@@ -10,6 +10,9 @@
 //   - progress: a progress bar over fake steps, with log lines that step
 //     around it and a stalled step that counts down its timeout
 //   - live: a block of lines redrawn in place
+//   - tui: a full-screen ticket tool on made-up tickets: a filtered table,
+//     dialogs, a thread, a reply editor and the key legend (needs a
+//     terminal)
 //   - table: a table in every drawn style, or in the format --output names
 //   - theme: the color roles, a painted diff, painted JSON, a stable color
 //     per name and a style read from --style
@@ -63,6 +66,7 @@ func run() int {
 		newTableCommand(),
 		newThemeCommand(),
 		newNoticeCommand(),
+		newTUICommand(),
 		newTermCommand(links),
 		cobrax.NewVersionCommand(info),
 	)

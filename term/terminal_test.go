@@ -122,3 +122,17 @@ func TestAskingLeavesDeadlinesWorking(t *testing.T) {
 		t.Logf("the Read ended with %v once there was something to read", <-done)
 	}
 }
+
+func TestControlsIsFalseOffATerminal(t *testing.T) {
+	var buf bytes.Buffer
+	if Controls(&buf) {
+		t.Error("a buffer acts on escape sequences")
+	}
+}
+
+func TestControlsIsFalseForADumbTerminal(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	if Controls(os.Stdout) {
+		t.Error("a dumb terminal acts on escape sequences")
+	}
+}
