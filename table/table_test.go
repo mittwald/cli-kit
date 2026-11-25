@@ -94,6 +94,52 @@ func TestRightAlignment(t *testing.T) {
 	}
 }
 
+func TestCenterAlignment(t *testing.T) {
+	tbl := New(&bytes.Buffer{}, []string{"Item", "Mark"}, WithAlignment(AlignLeft, AlignCenter))
+	tbl.Append("apples", "x")
+	tbl.Append("pears", "日本語")
+	got := render(t, tbl)
+	// The last column is padded on the left only: no line ends in spaces.
+	want := "Item     Mark\napples    x\npears   日本語\n"
+	if got != want {
+		t.Fatalf("plain alignment mismatch\nwant:\n%q\ngot:\n%q", want, got)
+	}
+	tbl = New(&bytes.Buffer{}, []string{"Mark", "Item"}, WithStyle(Light), WithColor(false), WithAlignment(AlignCenter))
+	tbl.Append("x", "apples")
+	tbl.Append("ab\nabcd", "pears")
+	got = render(t, tbl)
+	// An odd space goes to the right; every line of a cell is centered.
+	want = "┌──────┬────────┐\n" +
+		"│ Mark │ Item   │\n" +
+		"├──────┼────────┤\n" +
+		"│  x   │ apples │\n" +
+		"├──────┼────────┤\n" +
+		"│  ab  │ pears  │\n" +
+		"│ abcd │        │\n" +
+		"└──────┴────────┘\n"
+	if got != want {
+		t.Fatalf("framed alignment mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+	tbl = New(&bytes.Buffer{}, []string{"Item", "Mark"}, WithStyle(Markdown), WithAlignment(AlignLeft, AlignCenter))
+	tbl.Append("apples", "x")
+	got = render(t, tbl)
+	want = "| Item   | Mark |\n|--------|:----:|\n| apples |  x   |\n"
+	if got != want {
+		t.Fatalf("markdown alignment mismatch\nwant:\n%q\ngot:\n%q", want, got)
+	}
+	// An empty centered column still declares itself with a hyphen.
+	tbl = New(&bytes.Buffer{}, nil, WithStyle(Markdown), WithAlignment(AlignLeft, AlignCenter))
+	tbl.Append("apples", "")
+	got = render(t, tbl)
+	want = "|        |   |\n|--------|:-:|\n| apples |   |\n"
+	if got != want {
+		t.Fatalf("empty centered column\nwant:\n%q\ngot:\n%q", want, got)
+	}
+	if width := tbl.TotalWidth(); width != len("|--------|:-:|") {
+		t.Errorf("TotalWidth = %d", width)
+	}
+}
+
 func TestWideRunesAndPaintedCellsAlign(t *testing.T) {
 	tbl := New(&bytes.Buffer{}, []string{"Name", "Note"}, WithStyle(Light))
 	tbl.Append("日本", theme.Fg256(141).Paint("ok"))

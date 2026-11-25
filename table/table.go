@@ -23,6 +23,8 @@ const (
 	AlignLeft Align = iota
 	// AlignRight pads cells on the left, for numbers.
 	AlignRight
+	// AlignCenter pads cells on both sides; an odd space goes to the right.
+	AlignCenter
 )
 
 // Table collects rows and renders them. Build one with [New].
@@ -196,7 +198,7 @@ func (t *Table) Render() error {
 		return t.renderRecords()
 	}
 	headers, rows := t.prepare()
-	widths := columnWidths(headers, rows)
+	widths := t.columnWidths(headers, rows)
 	if len(widths) == 0 {
 		return nil
 	}
@@ -220,7 +222,7 @@ func (t *Table) Render() error {
 // table's edge.
 func (t *Table) TotalWidth() int {
 	headers, rows := t.prepare()
-	widths := columnWidths(headers, rows)
+	widths := t.columnWidths(headers, rows)
 	total := term.VisibleWidth(t.lineIndent())
 	for _, width := range widths {
 		total += width
@@ -408,7 +410,22 @@ func sanitizedCell(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-func columnWidths(headers []string, rows [][]string) []int {
+// columnWidths returns the widths of the columns as drawn: the widest cell
+// of each, and at least one cell for a centered column whose alignment the
+// header rule marks, which needs a hyphen between its colons.
+func (t *Table) columnWidths(headers []string, rows [][]string) []int {
+	widths := cellWidths(headers, rows)
+	if t.style.AlignMarkers {
+		for i := range widths {
+			if t.alignment(i) == AlignCenter {
+				widths[i] = max(widths[i], 3-2*cellPadding)
+			}
+		}
+	}
+	return widths
+}
+
+func cellWidths(headers []string, rows [][]string) []int {
 	widths := make([]int, len(headers))
 	for i, header := range headers {
 		widths[i] = term.VisibleWidth(header)
@@ -444,8 +461,15 @@ func lineAt(lines [][]string, col, line int) string {
 }
 
 func (t *Table) pad(cell string, width int, col int) string {
-	if t.alignment(col) == AlignRight {
+	switch t.alignment(col) {
+	case AlignRight:
 		return term.PadLeft(cell, width)
+	case AlignCenter:
+		gap := width - term.VisibleWidth(cell)
+		if gap <= 0 {
+			return cell
+		}
+		return strings.Repeat(" ", gap/2) + cell + strings.Repeat(" ", gap-gap/2)
 	}
 	return term.PadRight(cell, width)
 }
@@ -470,7 +494,7 @@ func (t *Table) renderPlain(w io.Writer, headers []string, rows [][]string, widt
 			parts := make([]string, 0, last+1)
 			for col := 0; col <= last; col++ {
 				cell := lineAt(lines, col, line)
-				if col < last || t.alignment(col) == AlignRight {
+				if col < last || t.alignment(col) != AlignLeft {
 					cell = t.pad(cell, widths[col], col)
 				}
 				if isHeader {
@@ -519,8 +543,13 @@ func (t *Table) renderFramed(w io.Writer, headers []string, rows [][]string, wid
 		segments := make([]string, len(widths))
 		for i, width := range widths {
 			segment := fill(l.Fill, width+2*cellPadding)
-			if t.style.AlignMarkers && t.alignment(i) == AlignRight {
-				segment = fill(l.Fill, width+2*cellPadding-1) + ":"
+			if t.style.AlignMarkers {
+				switch t.alignment(i) {
+				case AlignRight:
+					segment = fill(l.Fill, width+2*cellPadding-1) + ":"
+				case AlignCenter:
+					segment = ":" + fill(l.Fill, width+2*cellPadding-2) + ":"
+				}
 			}
 			segments[i] = segment
 		}
