@@ -62,6 +62,7 @@ func run() int {
 		newLiveCommand(),
 		newTableCommand(),
 		newThemeCommand(),
+		newNoticeCommand(),
 		newTermCommand(links),
 		cobrax.NewVersionCommand(info),
 	)

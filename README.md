@@ -41,6 +41,7 @@ compiled into your binary.
 | [`cobrax`](https://pkg.go.dev/github.com/mittwald/cli-kit/cobrax) | Cobra helpers: `--color` and other auto/always/never flags, enum flags, deprecated flag spellings as hidden aliases, hardened, cached and prefix-filtered shell completion with an optional `--install` or a script written to a path, version command |
 | [`fsx`](https://pkg.go.dev/github.com/mittwald/cli-kit/fsx) | Files replaced atomically with a chosen mode, refusing a symbolic link in their place |
 | [`browser`](https://pkg.go.dev/github.com/mittwald/cli-kit/browser) | A web page opened in the user's browser, http and https URLs only, without a shell |
+| [`notice`](https://pkg.go.dev/github.com/mittwald/cli-kit/notice) | Error, warning, info, OK and debug lines in line, badge, bar or block themes, with colors for dark and light terminals, colored values and patterns, made plain and redacted |
 | [`logx`](https://pkg.go.dev/github.com/mittwald/cli-kit/logx) | A `log/slog` handler writing plain, redacted lines for `--verbose` |
 | [`clipboard`](https://pkg.go.dev/github.com/mittwald/cli-kit/clipboard) | Text copied to the system clipboard through the platform's helper commands, without cgo |
 | [`buildinfo`](https://pkg.go.dev/github.com/mittwald/cli-kit/buildinfo) | Version, commit and date from `-ldflags` or the Go build information |
@@ -206,6 +207,23 @@ if verbose {
 logger := slog.New(logx.NewLineHandler(os.Stderr, &logx.Options{Level: level}))
 logger.Debug("sent a request", "path", path, "status", status) // plain, credentials redacted
 logger.Debug("response", "body", redact.Values(body, token))   // the token the program sent, in any escaped form
+```
+
+### Notices
+
+```go
+notice.Use(notice.New(notice.Options{
+	Theme:  notice.Badge.WithColors(notice.Deep), // or Line, Bar, Block; Default, Muted, Pastel
+	Debug:  verbose,
+	Around: bar.WithCleared, // a progress bar steps aside for each notice
+}))
+
+notice.Warnf("Booking day %s was never left: the start at %s has no Gehen",
+	notice.Date(day), notice.Time(start)) // values in their role's color
+notice.Error(err)                       // plain and redacted, like every argument
+
+mr := notice.NewRole("merge request", notice.RoleColors{Dark: theme.Fg256(218), Light: theme.Fg256(125)})
+th := notice.Block.WithPatterns(notice.Pattern{Match: regexp.MustCompile(`[\w./-]+![0-9]+`), Role: mr})
 ```
 
 ### Shell completion and version
