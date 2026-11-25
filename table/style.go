@@ -46,7 +46,8 @@ type Style struct {
 	// painted, and escape sequences are removed from its cells.
 	Verbatim bool
 	// AlignMarkers marks right-aligned columns with a colon at the right end
-	// of the header rule, the way markdown declares column alignment. There
+	// of the header rule, and centered ones with a colon at both ends, the way
+	// markdown declares column alignment. There
 	// the header rule is what makes the lines a table, so a style with
 	// AlignMarkers draws it for a table without headers too, under an empty
 	// header row.
