@@ -40,6 +40,7 @@ type Table struct {
 	color           *bool
 	theme           *theme.Theme
 	align           []Align
+	columnStyles    []ColumnStyle
 	recordLineJoin  string
 	cells           cellText
 	escapeFormulas  bool
@@ -138,6 +139,27 @@ func WithTheme(th theme.Theme) Option { return func(t *Table) { t.theme = &th } 
 // the list are left-aligned.
 func WithAlignment(aligns ...Align) Option {
 	return func(t *Table) { t.align = append([]Align(nil), aligns...) }
+}
+
+// ColumnStyle paints the cells of one column of a painted table.
+type ColumnStyle struct {
+	// Style paints the cells that have no colors of their own: a cell the
+	// program painted already, such as a time in the color of how recent
+	// it is, keeps its colors.
+	Style theme.Style
+	// Rules paint every cell after Style, those with colors of their own
+	// too, as theme.Rules paints: a rule with a pattern paints what it
+	// matches, one without paints the cell anew.
+	Rules theme.Rules
+}
+
+// WithColumnStyles paints the cells of the columns, in order, where the
+// table is painted (see [WithColor]). Every line of a cell is painted on its
+// own, as a drawn table needs it, and links in a cell stay. Columns beyond
+// the styles, and the header cells, are left as they are. Markdown and
+// record output are never painted.
+func WithColumnStyles(styles ...ColumnStyle) Option {
+	return func(t *Table) { t.columnStyles = append([]ColumnStyle(nil), styles...) }
 }
 
 // WithRecordLineJoin sets what joins the lines of a multi-line cell in CSV
@@ -270,8 +292,8 @@ func (t *Table) alignment(col int) Align {
 }
 
 // prepare returns the cells as they are drawn: headers transformed, line
-// endings normalized, made safe as the style or the cell option asks, and the
-// style's escaping and folding applied. Whichever way a cell is made, it
+// endings normalized, made safe as the style or the cell option asks, the
+// style's escaping and folding applied, and the column styles painted. Whichever way a cell is made, it
 // holds neither a tab nor a carriage return afterwards, so its width is the
 // same wherever on a line it is drawn. The table's own cells stay untouched,
 // so rendering twice gives the same output.
@@ -302,14 +324,34 @@ func (t *Table) prepare() ([]string, [][]string) {
 		}
 		headers[i] = cell(h)
 	}
+	paint := len(t.columnStyles) > 0 && t.colored()
 	rows := make([][]string, len(t.rows))
 	for i, row := range t.rows {
 		rows[i] = make([]string, len(row))
 		for j, c := range row {
 			rows[i][j] = cell(c)
+			if paint && j < len(t.columnStyles) {
+				rows[i][j] = t.columnStyles[j].paint(rows[i][j])
+			}
 		}
 	}
 	return headers, rows
+}
+
+// paint paints a drawn cell with s, line by line.
+func (s ColumnStyle) paint(cell string) string {
+	if cell == "" || s.Style == "" && len(s.Rules) == 0 {
+		return cell
+	}
+	rules := s.Rules
+	if s.Style != "" && !theme.HasColor(cell) {
+		rules = append(theme.Rules{{Style: s.Style}}, rules...)
+	}
+	lines := strings.Split(cell, "\n")
+	for i, line := range lines {
+		lines[i] = rules.Paint(line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // transformText returns s with fn applied to its text and its escape

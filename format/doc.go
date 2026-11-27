@@ -22,5 +22,7 @@
 // [Format.Colored] reports false for all of them whatever --color says.
 //
 // [Age] writes how long ago something happened in the few cells a column of
-// a listing has for it: "now", "5m", "3h", "2d", "5mo", "2y".
+// a listing has for it: "now", "5m", "3h", "2d", "5mo", "2y". [Ago] writes
+// it in words, "5 minutes ago" or "3 hours from now", and [ParseTimestamp]
+// tells a point in time as APIs write it from other text.
 package format

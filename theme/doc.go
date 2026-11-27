@@ -17,7 +17,9 @@
 //
 // [ParseStyle] reads a style a user wrote, such as "fg=white:bg=#aa0000:bold"
 // in an environment variable, and [Style.PaintMatches] paints what a
-// regular expression matches in text that may be painted already.
+// regular expression matches in text that may be painted already. [Rules]
+// apply such paintings in turn, and [HasColor] tells painted text from
+// plain.
 //
 // [Hashed] gives a name a style of its own that stays the same across rows
 // and runs, such as a color per author, picked from [NamePalette] or a
