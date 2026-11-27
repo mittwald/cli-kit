@@ -38,13 +38,17 @@
 //   - Layout: [VBox], [HBox] (children sized [Grow], [GrowBy], [Fixed] or
 //     [Fit]), [Panel], [Pages], [Tabs], [Pad], [Spacer], [Keyed]
 //   - Text: [Label], [Viewport] (a scrolling, searchable pager), [Badge]
+//     (on a [Solid] color), [GradientText]
+//   - Motion: [Shimmer] (text whose colors flow while work runs),
+//     [ProgressBar] (a bar with its label inside that glides to its
+//     value); any widget that is [Animated] keeps the screen redrawing
 //   - Input: [Input], [TextArea], [Toggle] (checkbox or switch),
 //     [RadioGroup], [CheckList], [Select], [Button], [Form]
 //   - Choosing: [List] (a list or a table, with a filter, marks and pages
 //     loaded on demand)
 //   - Layers: [Dialog], [App.Push], [App.Confirm], [App.Prompt],
 //     [App.Choose], [App.Menu], [App.EditText]
-//   - Chrome: [Legend], [StatusBar], the help on "?"
+//   - Chrome: [NewTitleBar], [Legend], [StatusBar], the help on "?"
 //
 // # Keys
 //
@@ -79,9 +83,22 @@
 // escape sequences are left out, so text from a server cannot move the
 // cursor or recolor the screen. Widgets that take text from elsewhere
 // (labels, list cells, titles) also fold it onto one line or wrap it.
-// Colors are styles of package theme, given with each [Span]; [Theme] holds
-// the styles of the widgets, derived from the active theme of package
-// theme.
+// Colors are styles of package theme, given with each [Span]. Text on a
+// background, such as the row under the cursor, keeps its color in a shade
+// that reads on that background.
+//
+// # Themes
+//
+// [Theme] holds the styles of the widgets. They draw with surfaces rather
+// than outlines: a panel's title is a badge on a bar across its top, a
+// dialog and the row under the cursor are filled, and a notice fills the
+// status bar with its level's color. The built-in themes are in [Schemes],
+// named by the theme.Scheme names package notice uses too, each with a
+// version for dark and one for light terminals; [ThemeOf] picks one and
+// [WithTheme] applies it. Without a theme of its own an application draws
+// in [DefaultTheme], or in [PlainTheme] where the terminal takes no colors.
+// 24-bit colors turn into the nearest of the 256 colors where the terminal
+// does not announce 24-bit colors.
 //
 // # Tests
 //

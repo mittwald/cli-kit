@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mittwald/cli-kit/theme"
 )
 
 func screenOf(t *testing.T, h *Headless) string {
@@ -435,7 +437,7 @@ func TestPagesAndTabs(t *testing.T) {
 	tabs.AddTab("a", "First", NewLabel("page a", ""))
 	tabs.AddTab("b", "Second", NewLabel("page b", ""))
 	h := NewHeadless(New(tabs), 30, 3)
-	wantContains(t, h, "First │ Second", "page a")
+	wantContains(t, h, "First   Second", "page a")
 	h.Press("]")
 	wantContains(t, h, "page b")
 	h.Press("alt+1")
@@ -938,5 +940,76 @@ func TestPopNotifiesAReplacementOnce(t *testing.T) {
 	app.Pop()
 	if got := strings.Join(events, " "); got != "second:true" {
 		t.Errorf("events = %q", got)
+	}
+}
+
+func TestReadableOnCursor(t *testing.T) {
+	cursor := DefaultTheme().Cursor
+	muted := theme.Join(cursor, theme.Fg256(244))
+	got := readable(muted)
+	if got == muted {
+		t.Fatalf("muted on the cursor kept %q", got)
+	}
+	fg, bg, _ := colors(got)
+	if r := contrast(fg.c, bg.c); r < minContrast {
+		t.Errorf("contrast of %q = %.2f", got, r)
+	}
+	if fg.c.r != fg.c.g || fg.c.g != fg.c.b {
+		t.Errorf("muted grey turned %v", fg.c)
+	}
+	for _, s := range []theme.Style{
+		theme.Join(cursor, theme.Fg256(203)),      // Readable already.
+		theme.Join(cursor, theme.Fg256(244), "7"), // Reverse video.
+		theme.Join(cursor, "31"),                  // The terminal's own red.
+		theme.Fg256(244),                          // No background.
+	} {
+		if got := readable(s); got != s {
+			t.Errorf("readable(%q) = %q", s, got)
+		}
+	}
+	if got := readable(theme.Join(muted, "58;2;255;0;0;4")); got == theme.Join(muted, "58;2;255;0;0;4") {
+		t.Errorf("an underline color stopped the shade: %q", got)
+	}
+	red := readable(theme.Join(theme.Bg256(238), theme.Fg256(88)))
+	if fg, _, _ := colors(red); fg.c.r <= fg.c.g || fg.c.r <= fg.c.b {
+		t.Errorf("dark red turned %v", fg.c)
+	}
+	light := readable(theme.Join(theme.Bg256(254), theme.Fg256(229)))
+	if fg, bg, _ := colors(light); luminance(fg.c) >= luminance(bg.c) || contrast(fg.c, bg.c) < minContrast {
+		t.Errorf("pale yellow on white = %q", light)
+	}
+}
+
+func TestCursorKeepsRowColor(t *testing.T) {
+	l := NewList(func(s string) []Span { return []Span{{Text: s}} })
+	l.SetItems([]string{"a", "b"})
+	l.SetRowStyle(func(string) theme.Style { return theme.Join(theme.Fg256(203), theme.Bg256(52)) })
+	h := NewHeadless(New(l), 10, 3)
+	var cell cell
+	for x := range 10 {
+		if c := *h.buf.at(x, 0); c.text == "a" {
+			cell = c
+		}
+	}
+	fg, bg, reverse := colors(cell.style)
+	_, want, _ := colors(DefaultTheme().Cursor)
+	if fg.c != palette256(203) || bg != want || reverse {
+		t.Errorf("cursor over a red row = %q", cell.style)
+	}
+}
+
+func TestBackground(t *testing.T) {
+	for in, want := range map[theme.Style]theme.Style{
+		"48;5;238;38;5;255":       "48;5;238",
+		"38;2;1;2;3;48;2;5;6;7;1": "48;2;5;6;7",
+		"1;41;38;5;48":            "41",
+		"48;2;1;2;3;0;1":          "",
+		"104;49;45":               "45",
+		"38;5;4":                  "",
+		"58;5;44;4":               "",
+	} {
+		if got := background(in); got != want {
+			t.Errorf("background(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

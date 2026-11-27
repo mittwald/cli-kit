@@ -472,17 +472,17 @@ func (b *Button) HandleMouse(m Mouse) bool {
 // Draw draws the button.
 func (b *Button) Draw(c Canvas) {
 	th := c.Theme()
-	style := th.Text
+	style := th.BadgeBlurred
 	switch {
 	case b.disabled:
 		style = th.Muted
 	case c.Focused(b):
-		style = theme.Join(th.Cursor, theme.Bold)
+		style = th.Badge
 	}
-	c.Text(0, 0, "[ "+b.label+" ]", style)
+	c.Text(0, 0, "  "+b.label+"  ", style)
 }
 
-// Size is the width of the label and its brackets, and one line.
+// Size is the width of the label and the padding around it, and one line.
 func (b *Button) Size(width, _ int) (int, int) { return min(textWidth(b.label)+4, width), 1 }
 
 // Select is a field that shows one of several options and, on Enter or

@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mittwald/cli-kit/term"
 	"github.com/mittwald/cli-kit/theme"
 )
 
@@ -118,13 +119,19 @@ func (b *buffer) diff(prev *buffer, color bool) string {
 	return out.String()
 }
 
-// attributes is style as written: whole where color is allowed, and
-// otherwise with its colors left out and its attributes kept (bold, dim,
-// italic, underline, reverse), as NO_COLOR asks, so the row under a cursor
-// still shows.
+// attributes is style as written: whole where color is allowed, its 24-bit
+// colors as the nearest of the 256 colors where the terminal takes no
+// 24-bit colors, and otherwise with its colors left out and its attributes
+// kept (bold, dim, italic, underline, reverse), as NO_COLOR asks.
 func attributes(style theme.Style, color bool) theme.Style {
-	if color || style == "" {
+	if style == "" {
 		return style
+	}
+	if color {
+		if trueColor() || !strings.Contains(string(style), ";2;") {
+			return style
+		}
+		return to256(style)
 	}
 	params := strings.Split(string(style), ";")
 	var kept []string
@@ -144,6 +151,25 @@ func attributes(style theme.Style, color bool) theme.Style {
 	return theme.Style(strings.Join(kept, ";"))
 }
 
+// to256 is style with each 24-bit color as the nearest of the 256 colors.
+func to256(style theme.Style) theme.Style {
+	params := strings.Split(string(style), ";")
+	out := make([]string, 0, len(params))
+	for i := 0; i < len(params); i++ {
+		p := params[i]
+		if (p == "38" || p == "48" || p == "58") && i+4 < len(params) && params[i+1] == "2" {
+			c, skip := extended(params[i+1:])
+			if c.known && skip == 4 {
+				out = append(out, p, "5", strconv.Itoa(term.Nearest256(c.c.r, c.c.g, c.c.b)))
+				i += skip
+				continue
+			}
+		}
+		out = append(out, p)
+	}
+	return theme.Style(strings.Join(out, ";"))
+}
+
 // frame is what every canvas of one draw shares.
 type frame struct {
 	app   *App
@@ -158,6 +184,8 @@ type frame struct {
 	// regions are where widgets were drawn, the last drawn on top, for
 	// the mouse.
 	regions []region
+	// readable caches what readable makes of a style.
+	readable map[theme.Style]theme.Style
 }
 
 // region is the rectangle a widget was drawn into.
@@ -202,11 +230,21 @@ func (c Canvas) WithStyle(base theme.Style) Canvas {
 	return c
 }
 
+// style is s drawn on the base of c, its foreground made readable on its
+// background.
 func (c Canvas) style(s theme.Style) theme.Style {
-	if c.base == "" {
-		return s
+	if c.base != "" {
+		s = theme.Join(c.base, s)
 	}
-	return theme.Join(c.base, s)
+	if r, ok := c.f.readable[s]; ok {
+		return r
+	}
+	r := readable(s)
+	if c.f.readable == nil {
+		c.f.readable = map[theme.Style]theme.Style{}
+	}
+	c.f.readable[s] = r
+	return r
 }
 
 // Text draws s at x, y in style and returns how many cells it took. It is
@@ -283,6 +321,46 @@ var (
 	BorderThick   = Border{"┏", "━", "┓", "┃", "┃", "┗", "━", "┛"}
 	BorderASCII   = Border{"+", "-", "+", "|", "|", "+", "-", "+"}
 )
+
+// Card draws a title bar across the top row of the canvas in the theme's
+// Bar style and returns the canvas below it. The first span of title is a
+// badge, in the theme's Badge style where focused and BadgeBlurred where
+// not, unless it has a style of its own; the rest of title follows it, and
+// footer sits on the right of the bar.
+func (c Canvas) Card(title, footer Line, focused bool) Canvas {
+	if c.w < 1 || c.h < 1 {
+		return c.Sub(0, 0, 0, 0)
+	}
+	th := c.Theme()
+	bar := c.Sub(0, 0, c.w, 1).WithStyle(th.Bar)
+	bar.Fill("")
+	var line Line
+	if len(title) > 0 {
+		head := title[0]
+		if head.Style == "" {
+			head.Style = th.BadgeBlurred
+			if focused {
+				head.Style = th.Badge
+			}
+		}
+		head.Text = " " + head.Text + " "
+		line = Line{head}
+		if len(title) > 1 {
+			line = append(append(line, Span{Text: " "}), title[1:]...)
+		}
+	}
+	fw := 0
+	if len(footer) > 0 {
+		fw = min(footer.Width(), max(c.w-2, 0))
+		bar.Line(c.w-1-fw, 0, TruncateLine(footer, fw))
+	}
+	room := c.w - fw
+	if fw > 0 {
+		room -= 2
+	}
+	bar.Line(0, 0, TruncateLine(line, max(room, 0)))
+	return c.Sub(0, 1, c.w, c.h-1)
+}
 
 // Box draws border around the canvas in style, with title on its top edge
 // and footer on its bottom edge, right-aligned, and returns the canvas

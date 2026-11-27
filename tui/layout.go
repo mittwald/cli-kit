@@ -195,9 +195,12 @@ func (b *Box) Size(width, height int) (int, int) {
 	return min(across, width), min(along, height)
 }
 
-// Panel draws a border around a widget, with a title and a footer on it.
-// The border takes the theme's FocusBorder while the widget, or one inside
-// it, has the focus.
+// Panel draws a widget under a title bar, as Canvas.Card does: the title
+// is a badge, in the theme's Badge style while the widget, or one inside
+// it, has the focus, and the footer sits on the right of the bar. With a
+// border set, it draws a border around the widget instead, with the title
+// and the footer on it, in the theme's FocusBorder style while it has the
+// focus.
 type Panel struct {
 	child  Widget
 	title  Line
@@ -208,7 +211,7 @@ type Panel struct {
 
 // NewPanel returns a panel around child with a title.
 func NewPanel(title string, child Widget) *Panel {
-	p := &Panel{child: child, border: BorderRounded}
+	p := &Panel{child: child, pad: 1}
 	p.SetTitle(title)
 	return p
 }
@@ -223,10 +226,12 @@ func (p *Panel) SetTitleLine(l Line) { p.title = l }
 // position.
 func (p *Panel) SetFooter(l Line) { p.footer = l }
 
-// SetBorder sets the characters of the border.
+// SetBorder draws a border of these characters around the widget instead
+// of the title bar; the zero Border goes back to the bar.
 func (p *Panel) SetBorder(b Border) { p.border = b }
 
-// SetPadding sets the blank columns inside the border on either side.
+// SetPadding sets the blank columns on either side of the widget, 1 unless
+// set.
 func (p *Panel) SetPadding(n int) { p.pad = max(n, 0) }
 
 // Child returns the widget inside the panel.
@@ -235,9 +240,14 @@ func (p *Panel) Child() Widget { return p.child }
 // Children returns the widget inside the panel.
 func (p *Panel) Children() []Widget { return []Widget{p.child} }
 
-// Draw draws the border and the widget inside it.
+// Draw draws the title bar, or the border, and the widget.
 func (p *Panel) Draw(c Canvas) {
 	th := c.Theme()
+	if p.border == (Border{}) {
+		inner := c.Card(p.title, p.footer, c.HasFocus(p))
+		inner.Sub(p.pad, 0, inner.Width()-2*p.pad, inner.Height()).Draw(p.child)
+		return
+	}
 	style, titleStyle := th.Border, th.Title
 	if c.HasFocus(p) {
 		style, titleStyle = th.FocusBorder, theme.Join(th.Title, th.FocusBorder)
@@ -253,9 +263,17 @@ func (p *Panel) Draw(c Canvas) {
 	inner.Sub(p.pad, 0, inner.Width()-2*p.pad, inner.Height()).Draw(p.child)
 }
 
-// Size is the size of the widget inside and the border.
+// Size is the size of the widget and the title bar, or the border.
 func (p *Panel) Size(width, height int) (int, int) {
 	w, h := width, height
+	if p.border == (Border{}) {
+		if s, ok := p.child.(Sizer); ok {
+			w, h = s.Size(width-2*p.pad, height-1)
+			w += 2 * p.pad
+			h++
+		}
+		return min(w, width), min(h, height)
+	}
 	if s, ok := p.child.(Sizer); ok {
 		w, h = s.Size(width-2-2*p.pad, height-2)
 		w += 2 + 2*p.pad
@@ -363,23 +381,23 @@ func (t *Tabs) step(delta int) {
 	}
 }
 
-// Draw draws the tab row and the page shown.
+// Draw draws the tab row, a bar with the tab shown as a badge, and the
+// page shown.
 func (t *Tabs) Draw(c Canvas) {
 	th := c.Theme()
+	bar := c.Sub(0, 0, c.Width(), 1).WithStyle(th.Bar)
+	bar.Fill("")
 	x := 0
-	for i, n := range t.names {
+	for _, n := range t.names {
 		title := t.titles[n]
 		if title == "" {
 			title = n
 		}
-		if i > 0 {
-			x += c.Text(x, 0, " │ ", th.Border)
-		}
 		style := th.Muted
 		if n == t.current {
-			style = theme.Join(th.Accent, theme.Bold)
+			style = th.Badge
 		}
-		x += c.Text(x, 0, title, style)
+		x += bar.Text(x, 0, " "+title+" ", style) + 1
 	}
 	c.Sub(0, 1, c.Width(), c.Height()-1).Draw(t.pages[t.current])
 }

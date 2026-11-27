@@ -16,12 +16,24 @@ import (
 
 func newTUICommand() *cobra.Command {
 	var mouse bool
+	var scheme string
 	cmd := &cobra.Command{
 		Use:   "tui",
 		Short: "A ticket tool built from package tui, on made-up tickets (needs a terminal)",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			app := newTicketApp(mouse)
+			var opts []tui.Option
+			if scheme != "" {
+				s, ok := theme.ParseScheme(scheme)
+				if !ok {
+					return fmt.Errorf("--theme %q is not one of %v", scheme, theme.Schemes)
+				}
+				opts = append(opts, tui.WithTheme(tui.ThemeOf(s)))
+			}
+			if mouse {
+				opts = append(opts, tui.WithMouse())
+			}
+			app := newTicketApp(opts...)
 			err := app.Run()
 			if errors.Is(err, tui.ErrNotATerminal) {
 				fmt.Fprintln(os.Stderr, "demo: tui needs a terminal")
@@ -31,6 +43,7 @@ func newTUICommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&mouse, "mouse", false, "take clicks and the wheel")
+	cmd.Flags().StringVar(&scheme, "theme", "", "the color scheme: default, muted, deep or pastel")
 	return cmd
 }
 
@@ -114,7 +127,13 @@ type ticketApp struct {
 	tickets []*ticket
 	list    *tui.List[*ticket]
 	panel   *tui.Panel
-	filters struct {
+	// wordmark shimmers while tickets load, and progress fills meanwhile,
+	// in progressRow over the list.
+	wordmark    *tui.Shimmer
+	progress    *tui.ProgressBar
+	progressRow tui.Widget
+	listBox     *tui.Box
+	filters     struct {
 		statuses   map[string]bool
 		department string
 		mine       bool
@@ -138,13 +157,10 @@ type detailRow struct {
 	edit  func()
 }
 
-func newTicketApp(mouse bool) *tui.App {
+func newTicketApp(opts ...tui.Option) *tui.App {
 	t := &ticketApp{tickets: sampleTickets()}
 	t.filters.statuses = map[string]bool{"open": true, "inProgress": true, "waiting": true}
-	opts := []tui.Option{}
-	if mouse {
-		opts = append(opts, tui.WithMouse())
-	}
+	t.wordmark = tui.NewShimmer("NEXUS")
 	t.pages = tui.NewPages()
 	t.pages.Add("list", t.listPage())
 	t.pages.Add("ticket", t.ticketPage())
@@ -158,12 +174,20 @@ func newTicketApp(mouse bool) *tui.App {
 			}
 			return tui.Text(t.list.Position()+" ", "")
 		})
-	root := tui.VBox(tui.Grow(t.pages), tui.Fit(tui.NewLegend()), tui.Fit(status))
+	top := tui.NewTitleBar(
+		func() tui.Line {
+			return append(t.wordmark.Line(), tui.Span{Text: "  conversations", Style: theme.Bold})
+		},
+		func() tui.Line {
+			return tui.Line{{Text: "support@example.com", Style: t.app.Theme().Muted}}
+		})
+	root := tui.VBox(tui.Fit(top), tui.Grow(t.pages), tui.Fit(tui.NewLegend()), tui.Fit(status))
 	t.app = tui.New(root, opts...)
 	km := t.app.Keymap()
 	km.Bind("quit", t.quit, "q").InGroup("General")
 	km.Bind("suspend", t.app.Suspend, "ctrl+z").Hide().InGroup("General")
 	t.refresh()
+	t.reload()
 	return t.app
 }
 
@@ -175,12 +199,21 @@ func (t *ticketApp) quit() {
 	t.app.Quit()
 }
 
-var statusStyles = map[string]theme.Style{
-	"open":       theme.Join(theme.Bold, theme.Fg256(203)),
-	"inProgress": theme.Fg256(141),
-	"waiting":    theme.Fg256(214),
-	"answered":   theme.Fg256(244),
-	"closed":     theme.Fg256(244),
+// th is the theme the application draws with, so the demo's colors follow
+// the scheme and the terminal's background.
+func (t *ticketApp) th() tui.Theme { return t.app.Theme() }
+
+func (t *ticketApp) statusStyle(status string) theme.Style {
+	th := t.th()
+	switch status {
+	case "open":
+		return theme.Join(theme.Bold, th.Error)
+	case "inProgress":
+		return th.Info
+	case "waiting":
+		return th.Warning
+	}
+	return th.Muted
 }
 
 func age(t time.Time) string {
@@ -202,13 +235,13 @@ func (t *ticketApp) listPage() tui.Widget {
 		}
 		return []tui.Span{
 			{Text: k.id},
-			{Text: prio, Style: theme.Join(theme.Bold, theme.Fg256(203))},
-			{Text: k.status, Style: statusStyles[k.status]},
-			{Text: k.department, Style: theme.Fg256(117)},
+			{Text: prio, Style: theme.Join(theme.Bold, t.th().Error)},
+			{Text: k.status, Style: t.statusStyle(k.status)},
+			{Text: k.department, Style: t.th().Accent},
 			{Text: k.title},
-			{Text: strings.Join(k.labels, ", "), Style: theme.Fg256(244)},
+			{Text: strings.Join(k.labels, ", "), Style: t.th().Muted},
 			{Text: k.customer},
-			{Text: age(k.updated), Style: theme.Fg256(244)},
+			{Text: age(k.updated), Style: t.th().Muted},
 		}
 	}).SetColumns(
 		tui.Column{Title: "ID"},
@@ -235,7 +268,10 @@ func (t *ticketApp) listPage() tui.Widget {
 	km.Bind("priority", func() { t.togglePrio(t.list.Marked()...) }, "p").InGroup("Tickets")
 	km.Bind("refresh", t.reload, "r", "ctrl+r").InGroup("Tickets")
 	t.panel = tui.NewPanel("Tickets", t.list)
-	return t.panel
+	t.progress = tui.NewProgressBar("loading tickets", tui.PastelColors[0])
+	t.progressRow = tui.Pad(t.progress, 0, 1, 0, 1)
+	t.listBox = tui.VBox(tui.Fit(t.progressRow), tui.Grow(t.panel))
+	return t.listBox
 }
 
 // refresh applies the filters to the tickets.
@@ -266,28 +302,41 @@ func (t *ticketApp) refresh() {
 	}
 	title := tui.Line{{Text: "Tickets"}}
 	if len(parts) > 0 {
-		title = append(title, tui.Span{Text: " · " + strings.Join(parts, ","), Style: theme.Fg256(244)})
+		title = append(title, tui.Span{Text: " · " + strings.Join(parts, ","), Style: t.th().Muted})
 	}
 	if t.filters.department != "" {
-		title = append(title, tui.Badge(t.filters.department, theme.Join(theme.Reverse, theme.Fg256(117))))
+		title = append(title, tui.Span{Text: " "}, tui.Badge(t.filters.department, tui.Solid(t.th().Accent)))
 	}
 	if t.filters.mine {
-		title = append(title, tui.Span{Text: " · mine", Style: theme.Fg256(244)})
+		title = append(title, tui.Span{Text: " · mine", Style: t.th().Muted})
 	}
 	t.panel.SetTitleLine(title)
 }
 
-// reload pretends to fetch the tickets again.
+// reload pretends to fetch the tickets again, page by page: the wordmark
+// shimmers and a bar fills over the list meanwhile.
 func (t *ticketApp) reload() {
 	done := t.app.Busy("loading tickets…")
 	t.list.SetLoading(true)
+	t.wordmark.SetActive(true)
+	t.progress.SetValue(0)
+	t.listBox.SetHidden(t.progressRow, false)
+	const pages = 8
 	t.app.Go(func() func() {
-		time.Sleep(800 * time.Millisecond)
+		for i := range pages {
+			time.Sleep(150 * time.Millisecond)
+			t.app.Post(func() {
+				t.progress.SetLabel(fmt.Sprintf("loading tickets · page %d of %d", i+1, pages)).SetValue(float64(i+1) / pages)
+			})
+		}
+		time.Sleep(300 * time.Millisecond)
 		return func() {
 			done()
 			t.list.SetLoading(false)
+			t.wordmark.SetActive(false)
+			t.listBox.SetHidden(t.progressRow, true)
 			t.refresh()
-			t.app.Notify(tui.LevelSuccess, "Tickets loaded")
+			t.app.Notifyf(tui.LevelSuccess, "%d tickets loaded", len(t.tickets))
 		}
 	})
 }
@@ -446,7 +495,7 @@ func (t *ticketApp) ticketPage() tui.Widget {
 	t.reply.OnChange = func(string) { t.replyFooter() }
 	t.internal.OnChange = func(bool) { t.replyFooter() }
 	t.details = tui.NewList(func(r detailRow) []tui.Span {
-		return append([]tui.Span{{Text: fmt.Sprintf("%-11s", r.label), Style: theme.Fg256(244)}}, r.value()...)
+		return append([]tui.Span{{Text: fmt.Sprintf("%-11s", r.label), Style: t.th().Muted}}, r.value()...)
 	})
 	t.details.OnSelect = func(r detailRow) {
 		if r.edit != nil {
@@ -479,7 +528,7 @@ func (t *ticketApp) back() {
 
 func (t *ticketApp) open(k *ticket) {
 	t.current = k
-	t.threadP.SetTitleLine(tui.Line{{Text: k.id + " "}, {Text: k.title}})
+	t.threadP.SetTitleLine(tui.Line{{Text: k.id}, {Text: k.title, Style: theme.Bold}})
 	t.fillThread()
 	t.fillDetails()
 	t.reply.SetValue("")
@@ -491,15 +540,15 @@ func (t *ticketApp) open(k *ticket) {
 func (t *ticketApp) fillThread() {
 	var lines []tui.Line
 	for _, m := range t.current.messages {
-		head := tui.Line{{Text: m.author, Style: theme.Bold}, {Text: " · " + m.at.Format("02.01. 15:04"), Style: theme.Fg256(244)}}
+		head := tui.Line{{Text: m.author, Style: theme.Bold}, {Text: " · " + m.at.Format("02.01. 15:04"), Style: t.th().Muted}}
 		if m.internal {
-			head = append(head, tui.Span{Text: " "}, tui.Badge("internal", theme.Join(theme.Reverse, theme.Fg256(214))))
+			head = append(head, tui.Span{Text: " "}, tui.Badge("internal", tui.Solid(t.th().Warning)))
 		}
 		lines = append(lines, head)
 		for l := range strings.SplitSeq(m.text, "\n") {
 			style := theme.Style("")
 			if m.internal {
-				style = theme.Fg256(223)
+				style = t.th().Warning
 			}
 			lines = append(lines, tui.Line{{Text: "  " + l, Style: style}})
 		}
@@ -513,16 +562,16 @@ func (t *ticketApp) fillDetails() {
 	k := t.current
 	val := func(s string) tui.Line { return tui.Text(s, "") }
 	t.details.SetItems([]detailRow{
-		{label: "Status", value: func() tui.Line { return tui.Text(k.status, statusStyles[k.status]) }, edit: func() { t.statusDialog(k) }},
+		{label: "Status", value: func() tui.Line { return tui.Text(k.status, t.statusStyle(k.status)) }, edit: func() { t.statusDialog(k) }},
 		{label: "Assignee", value: func() tui.Line {
 			if k.assignee == "" {
-				return tui.Text("— (a to take)", theme.Fg256(244))
+				return tui.Text("— (a to take)", t.th().Muted)
 			}
 			return val(k.assignee)
 		}, edit: func() { t.assign(k) }},
 		{label: "Priority", value: func() tui.Line {
 			if k.high {
-				return tui.Line{tui.Badge("high", theme.Join(theme.Reverse, theme.Fg256(203)))}
+				return tui.Line{tui.Badge("high", tui.Solid(t.th().Error))}
 			}
 			return val("normal")
 		}, edit: func() { t.togglePrio(k) }},
@@ -532,15 +581,15 @@ func (t *ticketApp) fillDetails() {
 		{label: "Labels", value: func() tui.Line { return val(strings.Join(k.labels, ", ")) }, edit: func() { t.labelDialog(k) }},
 		{label: "Resubmit", value: func() tui.Line {
 			if k.resubmit == "" {
-				return tui.Text("—", theme.Fg256(244))
+				return tui.Text("—", t.th().Muted)
 			}
 			return val(k.resubmit)
 		}, edit: func() { t.resubmitDialog(k) }},
 		{label: "Subscribed", value: func() tui.Line {
 			if k.subscribed {
-				return tui.Text("yes", theme.Fg256(114))
+				return tui.Text("yes", t.th().Success)
 			}
-			return tui.Text("no", theme.Fg256(244))
+			return tui.Text("no", t.th().Muted)
 		}, edit: func() { k.subscribed = !k.subscribed }},
 		{label: "Customer", value: func() tui.Line { return val(k.customer) }},
 		{label: "Messages", value: func() tui.Line { return val(fmt.Sprint(len(k.messages))) }},
@@ -548,12 +597,12 @@ func (t *ticketApp) fillDetails() {
 }
 
 func (t *ticketApp) replyFooter() {
-	style, what := theme.Fg256(214), "internal note"
+	style, what := t.th().Warning, "internal note"
 	if !t.internal.Value() {
-		style, what = theme.Fg256(203), "visible to the customer"
+		style, what = t.th().Error, "visible to the customer"
 	}
-	t.replyP.SetTitleLine(tui.Line{{Text: "Reply "}, {Text: what, Style: style}})
-	t.replyP.SetFooter(tui.Text(fmt.Sprintf("%d/%d", t.reply.Len(), t.reply.Limit()), theme.Fg256(244)))
+	t.replyP.SetTitleLine(tui.Line{{Text: "Reply"}, {Text: what, Style: style}})
+	t.replyP.SetFooter(tui.Text(fmt.Sprintf("%d/%d", t.reply.Len(), t.reply.Limit()), t.th().Muted))
 }
 
 func (t *ticketApp) send() {

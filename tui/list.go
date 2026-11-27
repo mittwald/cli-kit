@@ -542,7 +542,8 @@ func (l *List[T]) Draw(c Canvas) {
 			if focused {
 				cursor = th.Cursor
 			}
-			base = theme.Join(base, cursor)
+			// The row keeps its own color, on the cursor's background.
+			base = theme.Join(cursor, base, background(cursor))
 			c.Sub(0, 0, width, c.Height()).WithStyle(cursor).FillRow(1, y, "")
 		}
 		if l.columns != nil {
