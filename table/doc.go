@@ -35,7 +35,11 @@
 //
 // Header cells and frame rules are painted with the active theme's Header and
 // Border styles when term.Colored reports color for the writer, or as
-// [WithColor] decides. Markdown and record output is never painted.
+// [WithColor] decides. [WithColumnStyles] paints the cells of columns too: in
+// a color of the column, which a cell the program painted itself keeps out
+// of, and with theme.Rules, such as an error word in red. [NewPalette] gives
+// such colors for a listing, changed through the environment where the user
+// wants other ones. Markdown and record output is never painted.
 //
 // # Text from elsewhere
 //

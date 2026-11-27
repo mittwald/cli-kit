@@ -28,13 +28,13 @@ compiled into your binary.
 | Package | What it does |
 |---|---|
 | [`term`](https://pkg.go.dev/github.com/mittwald/cli-kit/term) | Terminal detection and size, the `--color` mode with `NO_COLOR` and `TERM=dumb`, visible text width, truncation, padding, word wrapping, OSC 8 hyperlinks and when to write them, 24-bit color detection, and untrusted output made safe to show |
-| [`theme`](https://pkg.go.dev/github.com/mittwald/cli-kit/theme) | SGR styles, styles parsed from user settings ("fg=white:bg=#aa0000:bold"), regular expression matches painted into painted text, the color roles the other packages paint with, unified diffs painted the way git paints them, painted JSON, and a stable color per name |
+| [`theme`](https://pkg.go.dev/github.com/mittwald/cli-kit/theme) | SGR styles, styles parsed from user settings ("fg=white:bg=#aa0000:bold"), regular expression matches painted into painted text, rules that paint text in turn, the color roles the other packages paint with, unified diffs painted the way git paints them, painted JSON, and a stable color per name |
 | [`pick`](https://pkg.go.dev/github.com/mittwald/cli-kit/pick) | Interactive list selection with filtering, views and ranges, per-row and in-cell painting, an adjustable look, switches, and line-edited text and secret input |
 | [`tui`](https://pkg.go.dev/github.com/mittwald/cli-kit/tui) | Full-screen terminal applications from widgets: lists and tables that filter as you type, text fields and editors, switches, radio buttons, check lists, forms, dialogs and menus, panels, tabs and pages, a key legend, a help screen and a status bar, with a headless driver for tests |
 | [`live`](https://pkg.go.dev/github.com/mittwald/cli-kit/live) | Blocks of lines redrawn in place, detail/result output separation, and cursor and terminal restore on exit, panic and signals |
 | [`progress`](https://pkg.go.dev/github.com/mittwald/cli-kit/progress) | A gradient progress bar with a stall countdown that steps aside for log lines |
-| [`table`](https://pkg.go.dev/github.com/mittwald/cli-kit/table) | Tables in plain, framed and Markdown styles, and CSV/TSV records, with spreadsheet formulas escaped on request |
-| [`format`](https://pkg.go.dev/github.com/mittwald/cli-kit/format) | An `--output` flag value, JSON/YAML writers driven by the same struct tags, and compact ages ("3h", "5mo") |
+| [`table`](https://pkg.go.dev/github.com/mittwald/cli-kit/table) | Tables in plain, framed and Markdown styles, and CSV/TSV records, with columns painted by style and pattern, a palette users can change through the environment, and spreadsheet formulas escaped on request |
+| [`format`](https://pkg.go.dev/github.com/mittwald/cli-kit/format) | An `--output` flag value, JSON/YAML writers driven by the same struct tags, ages compact ("3h", "5mo") and in words ("3 hours ago"), and timestamps as APIs write them |
 | [`ics`](https://pkg.go.dev/github.com/mittwald/cli-kit/ics) | An RFC 5545 iCalendar writer |
 | [`secret`](https://pkg.go.dev/github.com/mittwald/cli-kit/secret) | Credentials from flags, files, environment, stdin, the OS keyring or a hidden prompt |
 | [`redact`](https://pkg.go.dev/github.com/mittwald/cli-kit/redact) | Known secrets and recognizable credentials removed from text before it is logged, with the standard library only |
