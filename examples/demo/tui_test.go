@@ -9,7 +9,7 @@ import (
 
 // TestTicketDemo walks through the screens of the tui demo.
 func TestTicketDemo(t *testing.T) {
-	h := tui.NewHeadless(newTicketApp(false), 110, 26)
+	h := tui.NewHeadless(newTicketApp(), 110, 26)
 	want := func(what string, parts ...string) {
 		t.Helper()
 		s := h.Screen()
@@ -25,7 +25,7 @@ func TestTicketDemo(t *testing.T) {
 	h.Press("enter")
 	want("filtered", "/versand", "1/5")
 	h.Press("esc", "f")
-	want("filter dialog", "Filters", "Department", "[ Apply ]")
+	want("filter dialog", "Filters", "Department", "  Apply  ")
 	h.Press("esc", "m")
 	want("menu", "Assign to me", "Close ticket")
 	h.Press("esc", "enter")
@@ -42,10 +42,12 @@ func TestTicketDemo(t *testing.T) {
 }
 
 func TestClosingATicketTakesItOffTheOpenList(t *testing.T) {
-	app := newTicketApp(false)
+	app := newTicketApp()
 	h := tui.NewHeadless(app, 110, 26)
 	h.Press("m", "c", "enter")
-	if strings.Contains(h.Screen(), "│  m-3290102") || !strings.Contains(h.Screen(), "1/23") {
+	lines := h.Lines()
+	// The last line is the status bar, which names the ticket closed.
+	if strings.Contains(strings.Join(lines[:len(lines)-1], "\n"), "m-3290102") || !strings.Contains(lines[len(lines)-1], "OK") {
 		t.Errorf("a closed ticket stays listed:\n%s", h.Screen())
 	}
 }

@@ -41,6 +41,20 @@ const (
 	LevelError
 )
 
+// String is the label a notice of the level carries in the status bar:
+// INFO, OK, WARN or ERROR, as package notice labels its notices.
+func (l Level) String() string {
+	switch l {
+	case LevelSuccess:
+		return "OK"
+	case LevelWarning:
+		return "WARN"
+	case LevelError:
+		return "ERROR"
+	}
+	return "INFO"
+}
+
 // Notice is a message shown in the status bar for a while.
 type Notice struct {
 	Level Level
@@ -74,8 +88,9 @@ type layer struct {
 // Option configures an App.
 type Option func(*App)
 
-// WithTheme sets the styles the widgets draw with; DefaultTheme otherwise.
-func WithTheme(t Theme) Option { return func(a *App) { a.theme = t } }
+// WithTheme sets the styles the widgets draw with; DefaultTheme otherwise,
+// or PlainTheme where the terminal takes no colors.
+func WithTheme(t Theme) Option { return func(a *App) { a.theme, a.themed = t, true } }
 
 // WithMouse turns the mouse on: clicks focus widgets and reach Clickers,
 // the wheel scrolls. Text can then be selected with Shift held, in most
@@ -103,6 +118,7 @@ type App struct {
 	layers []*layer
 	keymap *Keymap
 	theme  Theme
+	themed bool
 	mouse  bool
 	noHelp bool
 	in     *os.File
@@ -707,8 +723,18 @@ func (a *App) render(w, h int) (*buffer, *frame) {
 }
 
 // moving reports whether the screen changes without an event: a spinner
-// turns or a notice is to go.
-func (a *App) moving() bool { return len(a.busy) > 0 || a.notice != nil }
+// turns, a notice is to go or a widget is Animated.
+func (a *App) moving() bool {
+	if len(a.busy) > 0 || a.notice != nil {
+		return true
+	}
+	for _, l := range a.layers {
+		if animating(l.w) {
+			return true
+		}
+	}
+	return false
+}
 
 // ShowHelp shows every binding that applies now, grouped, in a layer.
 func (a *App) ShowHelp() {
@@ -746,6 +772,9 @@ func (a *App) Run() error {
 		return err
 	}
 	defer t.close()
+	if !a.themed && !t.colored() {
+		a.theme = PlainTheme
+	}
 	return a.loop(t)
 }
 

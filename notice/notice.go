@@ -3,8 +3,6 @@ package notice
 import (
 	"io"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -178,15 +176,6 @@ func Error(err error) { Active().Error(err) }
 // Warn writes err as a warning notice with the [Active] Printer.
 func Warn(err error) { Active().Warn(err) }
 
-// lightBackground reports what COLORFGBG says of the background: its last
-// field is the background's color number, and 7 and 15 (white) are the
-// light ones, as the terminals that set it use them.
-func lightBackground(colorfgbg string) bool {
-	fields := strings.Split(colorfgbg, ";")
-	n, err := strconv.Atoi(strings.TrimSpace(fields[len(fields)-1]))
-	return err == nil && (n == 7 || n == 15)
-}
-
 // light reports whether the light colors apply.
 func (p *Printer) light() bool {
 	switch p.options.Background {
@@ -195,5 +184,5 @@ func (p *Printer) light() bool {
 	case BackgroundDark:
 		return false
 	}
-	return lightBackground(os.Getenv("COLORFGBG"))
+	return term.LightBackground()
 }

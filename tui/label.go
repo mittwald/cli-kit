@@ -173,9 +173,13 @@ func (*Legend) Size(width, _ int) (int, int) { return width, 1 }
 
 // StatusBar is the line at the bottom of an application: a notice from
 // App.Notify, or what App.Busy says it is busy with, or else text of its
-// own on the left, and text on the right.
+// own on the left, and text on the right. A notice fills the whole bar
+// with the color of its level, its label in front, as a warning stands out
+// at the bottom of a timesheet.
 type StatusBar struct {
 	left, right func() Line
+	// top makes it a title bar: no notices, in the theme's TitleBar style.
+	top bool
 }
 
 // NewStatusBar returns a status bar. left and right make the text on either
@@ -184,36 +188,55 @@ func NewStatusBar(left, right func() Line) *StatusBar {
 	return &StatusBar{left: left, right: right}
 }
 
+// NewTitleBar returns the line at the top of an application, in the
+// theme's TitleBar style: the name of the tool on the left, say, and where
+// it is connected to on the right. left and right make the text on either
+// side for every frame; either may be nil.
+func NewTitleBar(left, right func() Line) *StatusBar {
+	return &StatusBar{left: left, right: right, top: true}
+}
+
 // Draw draws the bar.
 func (s *StatusBar) Draw(c Canvas) {
 	th := c.Theme()
-	c = c.WithStyle(th.StatusBar)
+	style := th.StatusBar
+	if s.top {
+		style = th.TitleBar
+	}
+	var left Line
+	if app := c.App(); app != nil && !s.top {
+		notice, busy := app.Status()
+		switch {
+		case notice != nil:
+			color, label := map[Level]theme.Style{
+				LevelInfo: th.Info, LevelSuccess: th.Success,
+				LevelWarning: th.Warning, LevelError: th.Error,
+			}[notice.Level], notice.Level.String()
+			style = Solid(color)
+			c = c.WithStyle(style)
+			c.Fill("")
+			c.Line(0, 0, TruncateLine(Line{
+				{Text: " " + label + strings.Repeat(" ", max(6-len(label), 1)), Style: theme.Bold},
+				{Text: term.PlainLine(notice.Text), Style: "22"},
+			}, c.Width()))
+			return
+		case busy != "":
+			left = Text(" "+busy, th.Accent)
+		}
+	}
+	c = c.WithStyle(style)
 	c.Fill("")
 	var right Line
 	if s.right != nil {
 		right = s.right()
 	}
-	rw := min(right.Width(), c.Width())
-	c.Line(c.Width()-rw, 0, TruncateLine(right, rw))
-	room := c.Width() - rw - 1
-	var left Line
-	if app := c.App(); app != nil {
-		notice, busy := app.Status()
-		switch {
-		case notice != nil:
-			style := map[Level]theme.Style{
-				LevelInfo: th.Info, LevelSuccess: th.Success,
-				LevelWarning: th.Warning, LevelError: th.Error,
-			}[notice.Level]
-			left = Text(term.PlainLine(notice.Text), style)
-		case busy != "":
-			left = Text(busy, th.Accent)
-		}
-	}
+	rw := min(right.Width(), max(c.Width()-1, 0))
+	c.Line(c.Width()-rw-1, 0, TruncateLine(right, rw))
+	room := c.Width() - rw - 2
 	if left == nil && s.left != nil {
-		left = s.left()
+		left = append(Line{{Text: " "}}, s.left()...)
 	}
-	c.Line(0, 0, TruncateLine(left, room))
+	c.Line(0, 0, TruncateLine(left, max(room, 0)))
 }
 
 // Size is one line.
@@ -267,8 +290,8 @@ func (h *help) Children() []Widget { return []Widget{h.view} }
 
 func (h *help) Draw(c Canvas) {
 	th := c.Theme()
-	inner := c.Box(BorderRounded, th.FocusBorder, Text("Keys", th.Title), Text("esc close", th.Muted))
-	inner.Sub(1, 0, inner.Width()-1, inner.Height()).Draw(h.view)
+	inner := c.Card(Line{{Text: "Keys"}}, Text("esc close", th.Muted), true)
+	inner.Sub(2, 1, inner.Width()-2, inner.Height()-1).Draw(h.view)
 }
 
 func (h *help) Size(width, height int) (int, int) {
@@ -276,5 +299,5 @@ func (h *help) Size(width, height int) (int, int) {
 	for _, l := range h.view.lines {
 		w = max(w, l.Width())
 	}
-	return min(w+5, width), min(len(h.view.lines)+2, height)
+	return min(w+5, width), min(len(h.view.lines)+3, height)
 }

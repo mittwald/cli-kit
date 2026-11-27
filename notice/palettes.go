@@ -92,8 +92,14 @@ var Pastel = Colors{
 	),
 }
 
-// AllColors lists the built-in colors by name.
-var AllColors = map[string]Colors{"default": Default, "muted": Muted, "deep": Deep, "pastel": Pastel}
+// Schemes are the built-in colors by the scheme they belong to, so one
+// theme.Scheme picks these and the colors of the other packages alike.
+var Schemes = map[theme.Scheme]Colors{
+	theme.SchemeDefault: Default,
+	theme.SchemeMuted:   Muted,
+	theme.SchemeDeep:    Deep,
+	theme.SchemePastel:  Pastel,
+}
 
 // levelSpec is one level of a dark palette, in the color notation of
 // [color]: label, accent, text, tint, tint text, and the block values of

@@ -179,8 +179,8 @@ func (f *Form) Size(width, height int) (int, int) {
 	return min(w+lw+2, width), min(h, height)
 }
 
-// Dialog is a box with a title around a body and a row of buttons, for a
-// layer pushed with App.Push.
+// Dialog is a body and a row of buttons under a title bar, for a layer
+// pushed with App.Push.
 type Dialog struct {
 	title   string
 	body    Widget
@@ -210,15 +210,17 @@ func (d *Dialog) Children() []Widget {
 	return out
 }
 
-// Draw draws the box, the body and the buttons, right-aligned.
+// Draw draws the title bar, the body and the buttons, right-aligned.
 func (d *Dialog) Draw(c Canvas) {
 	th := c.Theme()
 	var footer Line
 	if d.footer != "" {
 		footer = Text(d.footer, th.Muted)
 	}
-	inner := c.Box(BorderRounded, th.FocusBorder, Text(d.title, th.Title), footer)
-	inner = inner.Sub(1, 0, inner.Width()-2, inner.Height())
+	// The row under the bar and the one at the bottom stay blank, as the
+	// columns on either side do.
+	inner := c.Card(Line{{Text: d.title}}, footer, true)
+	inner = inner.Sub(2, 1, inner.Width()-4, inner.Height()-2)
 	bodyH := inner.Height()
 	if len(d.buttons) > 0 {
 		bodyH -= 2
@@ -245,7 +247,7 @@ func (d *Dialog) Size(width, height int) (int, int) {
 		inner = min(d.width, width) - 4
 	}
 	if s, ok := d.body.(Sizer); ok {
-		w, h = s.Size(inner, height-4)
+		w, h = s.Size(inner, height-5)
 	}
 	bw := 0
 	for _, b := range d.buttons {
@@ -259,7 +261,7 @@ func (d *Dialog) Size(width, height int) (int, int) {
 	if len(d.buttons) > 0 {
 		h += 2
 	}
-	return min(w+4, width), min(h+2, height)
+	return min(w+4, width), min(h+3, height)
 }
 
 // Confirm asks a yes/no question in a dialog: Enter on Yes or "y" answers
@@ -456,7 +458,8 @@ func (m *menu) Draw(c Canvas) {
 			style = th.Muted
 		}
 		if i == m.cursor {
-			style = theme.Join(style, th.Cursor)
+			// The item keeps its own color on the cursor's background.
+			style = theme.Join(th.Cursor, style, background(th.Cursor))
 			c.WithStyle(th.Cursor).FillRow(0, y, "")
 		}
 		c.Text(1, y, it.Label, style)

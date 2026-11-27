@@ -101,3 +101,11 @@ func TestTrueColor(t *testing.T) {
 		})
 	}
 }
+
+func TestLightBackgroundDetection(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "15;0": false, "0;15": true, "0;default;7": true, "12;8": false, "x": false} {
+		if got := lightBackground(value); got != want {
+			t.Errorf("lightBackground(%q) = %v, want %v", value, got, want)
+		}
+	}
+}
