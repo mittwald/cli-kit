@@ -6,7 +6,6 @@ import (
 	"os"
 	"regexp"
 	"slices"
-	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -39,18 +38,13 @@ func runNotice(themeName, colorsName, background string) error {
 	if !ok {
 		return fmt.Errorf("--background %q is not auto, dark or light", background)
 	}
-	names := make([]string, 0, len(notice.AllColors))
-	for name := range notice.AllColors {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	// default first, the rest by name
-	names = append([]string{"default"}, slices.DeleteFunc(names, func(n string) bool { return n == "default" })...)
+	names := theme.Schemes
 	if colorsName != "" {
-		if _, ok := notice.AllColors[colorsName]; !ok {
+		s, ok := theme.ParseScheme(colorsName)
+		if !ok {
 			return fmt.Errorf("--colors %q is not one of %v", colorsName, names)
 		}
-		names = []string{colorsName}
+		names = []theme.Scheme{s}
 	}
 	themes := notice.Themes
 	if themeName != "" {
@@ -70,7 +64,7 @@ func runNotice(themeName, colorsName, background string) error {
 		for _, t := range themes {
 			fmt.Println(title.Paint(fmt.Sprintf("── %s · %s ──", t.Name, name)))
 			p := notice.New(notice.Options{
-				Theme:      t.WithColors(notice.AllColors[name]).WithPatterns(mrPattern),
+				Theme:      t.WithColors(notice.Schemes[name]).WithPatterns(mrPattern),
 				Background: bg,
 				Writer:     os.Stdout,
 				Debug:      true,

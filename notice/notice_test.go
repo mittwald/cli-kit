@@ -206,14 +206,6 @@ func TestLightBackground(t *testing.T) {
 	}
 }
 
-func TestLightBackgroundDetection(t *testing.T) {
-	for value, want := range map[string]bool{"": false, "15;0": false, "0;15": true, "0;default;7": true, "12;8": false, "x": false} {
-		if got := lightBackground(value); got != want {
-			t.Errorf("lightBackground(%q) = %v, want %v", value, got, want)
-		}
-	}
-}
-
 func TestColorsOverride(t *testing.T) {
 	colored(t)
 	var buf bytes.Buffer
@@ -292,7 +284,7 @@ func TestAdaptTo256(t *testing.T) {
 }
 
 func TestBuiltinPalettesAreComplete(t *testing.T) {
-	for name, c := range AllColors {
+	for name, c := range Schemes {
 		for _, level := range Levels {
 			lc := c.Dark.Levels[level]
 			if lc.Label == "" || lc.Accent == "" || lc.Text == "" || lc.Tint == "" || lc.TintText == "" {

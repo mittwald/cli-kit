@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 )
@@ -132,4 +133,18 @@ func TrueColor() bool { return trueColor(os.Getenv("COLORTERM")) }
 // 24-bit colors.
 func trueColor(colorterm string) bool {
 	return strings.EqualFold(colorterm, "truecolor") || strings.EqualFold(colorterm, "24bit")
+}
+
+// LightBackground reports whether the terminal says its background is
+// light, as the COLORFGBG environment variable does where terminals set it:
+// its last field is the background's color number, and 7 and 15 (white)
+// are the light ones. Without it, the background counts as dark.
+func LightBackground() bool { return lightBackground(os.Getenv("COLORFGBG")) }
+
+// lightBackground reports what colorfgbg, a value of COLORFGBG, says of the
+// background.
+func lightBackground(colorfgbg string) bool {
+	fields := strings.Split(colorfgbg, ";")
+	n, err := strconv.Atoi(strings.TrimSpace(fields[len(fields)-1]))
+	return err == nil && (n == 7 || n == 15)
 }
